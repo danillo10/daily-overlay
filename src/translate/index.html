@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tradução</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="panel">
+      <header class="chrome" id="drag">
+        <span class="grip-dots" aria-hidden="true"></span>
+        <span class="title">Tradução PT</span>
+        <span class="pill" id="live">aguardando</span>
+        <span class="time" id="time">00:00</span>
+        <button type="button" id="close" title="Ocultar">×</button>
+      </header>
+      <div class="history" id="history"></div>
+    </div>
+    <div class="edge n" data-edge="n"></div>
+    <div class="edge s" data-edge="s"></div>
+    <div class="edge e" data-edge="e"></div>
+    <div class="edge w" data-edge="w"></div>
+    <div class="corner nw" data-edge="nw"></div>
+    <div class="corner ne" data-edge="ne"></div>
+    <div class="corner sw" data-edge="sw"></div>
+    <div class="corner se" data-edge="se"></div>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

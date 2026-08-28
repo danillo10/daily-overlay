@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Daily Overlay</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="top">
+        <div class="brand">
+          <span class="mark" data-live="false"></span>
+          <div>
+            <h1>Daily Overlay</h1>
+            <p class="tag">Legendas ao vivo sobre a reunião</p>
+          </div>
+        </div>
+        <div class="clock" id="clock">00:00</div>
+      </header>
+
+      <section class="hero-card">
+        <button id="toggle" class="go" type="button">Iniciar transcrição</button>
+        <div class="meter" aria-hidden="true"><i id="meterBar"></i></div>
+        <p class="hint" id="hint">Pra OpenAI ao vivo: Motor = Whisper na nuvem, Provedor = OpenAI Whisper, cola a key sk-… e inicia. O status tem que mostrar “openai”.</p>
+      </section>
+
+      <section class="grid">
+        <label>
+          Idioma
+          <select id="language">
+            <option value="pt-BR">Português (Brasil)</option>
+            <option value="en-US">English</option>
+            <option value="es-ES">Español</option>
+          </select>
+        </label>
+        <label>
+          Fonte de áudio
+          <select id="source">
+            <option value="system">Só áudio da reunião</option>
+            <option value="both">Reunião + microfone</option>
+            <option value="mic">Só microfone</option>
+          </select>
+        </label>
+        <label>
+          Canal de áudio
+          <select id="audioApp">
+            <option value="">Auto (Discord / Teams / Meet / Zoom)</option>
+          </select>
+        </label>
+        <label>
+          Motor
+          <select id="engine">
+            <option value="auto">Auto (recomendado)</option>
+            <option value="speech">Web Speech (ao vivo)</option>
+            <option value="local">Whisper local</option>
+            <option value="cloud">Whisper na nuvem</option>
+          </select>
+        </label>
+        <label>
+          Monitor
+          <select id="display"></select>
+        </label>
+      </section>
+
+      <section class="toggles">
+        <label class="check"><input type="checkbox" id="follow" checked /> Seguir a tela do cursor</label>
+        <label class="check"><input type="checkbox" id="overlayVisible" checked /> Mostrar overlay</label>
+        <label class="check"><input type="checkbox" id="clickThrough" checked /> Clique atravessa o overlay</label>
+        <label class="check"><input type="checkbox" id="hideCapture" /> Ocultar do compartilhamento de tela</label>
+        <label class="check"><input type="checkbox" id="translatePt" /> Janela de tradução PT (histórico, arrasta e redimensiona)</label>
+        <label>
+          Motor da tradução
+          <select id="translateEngine">
+            <option value="free">Grátis (MyMemory, sem gastar a OpenAI)</option>
+            <option value="cloud">Paga (OpenAI/Groq, mesma key)</option>
+          </select>
+        </label>
+        <label>
+          Fundo da janela PT
+          <input type="range" id="translateOpacity" min="0" max="90" value="0" />
+        </label>
+      </section>
+
+      <section class="cloud" id="cloudFields">
+        <label>
+          Provedor
+          <select id="provider">
+            <option value="groq">Groq (whisper-large-v3)</option>
+            <option value="openai">OpenAI Whisper</option>
+          </select>
+        </label>
+        <label>
+          API key
+          <input id="apiKey" type="password" placeholder="grm_… ou sk-…" autocomplete="off" />
+        </label>
+      </section>
+
+      <section class="status-row">
+        <span id="status">Pronto</span>
+        <span id="engineStatus"></span>
+      </section>
+
+      <section class="transcript-wrap">
+        <div class="transcript-head">
+          <h2>Ata da daily</h2>
+          <div class="actions">
+            <button id="copy" type="button">Copiar</button>
+            <button id="clear" type="button" class="ghost">Limpar</button>
+          </div>
+        </div>
+        <div id="partial" class="partial"></div>
+        <pre id="transcript" class="transcript"></pre>
+      </section>
+    </div>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
