@@ -40,7 +40,6 @@ const state = {
   translatedVolume: Number(sessionStorage.getItem("polycall_translated_volume") || 100) / 100,
   captionTimer: null,
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }, { urls: "stun:stun1.l.google.com:19302" }],
-  apiKey: sessionStorage.getItem("polycall_openai_key") || "",
   apiOrigin: API_ORIGIN,
   transcriptionTimer: null,
   transcriptionGeneration: 0,
@@ -77,7 +76,6 @@ const ui = {
   joinCard: document.querySelector(".join-card"),
   displayName: $("displayName"),
   language: $("language"),
-  apiKey: $("apiKey"),
   roomCode: $("roomCode"),
   formError: $("formError"),
   primaryAction: $("primaryAction"),
@@ -126,7 +124,6 @@ const ui = {
   toast: $("toast"),
 };
 
-ui.apiKey.value = state.apiKey;
 if (ui.voiceEnabled) ui.voiceEnabled.checked = state.voiceEnabled;
 if (ui.chatVoiceEnabled) ui.chatVoiceEnabled.checked = state.voiceEnabled;
 let joinMode = new URLSearchParams(location.search).has("room");
@@ -185,17 +182,16 @@ ui.joinForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   ui.formError.textContent = "";
   const name = ui.displayName.value.trim();
-  const apiKey = ui.apiKey.value.trim();
   const roomId = joinMode ? normalizeRoomId(ui.roomCode.value) : generateRoomId();
-  if (!name || roomId.length < 4 || !apiKey.startsWith("sk-")) {
-    ui.formError.textContent = "Preencha seu nome, a chave OpenAI e um código de sala válido.";
+  if (!name || roomId.length < 4) {
+    ui.formError.textContent = "Preencha seu nome e um código de sala válido.";
     return;
   }
 
   ui.primaryAction.disabled = true;
   ui.primaryAction.querySelector("span").textContent = "Preparando sala...";
   try {
-    await joinMeeting({ name, roomId, language: ui.language.value, apiKey });
+    await joinMeeting({ name, roomId, language: ui.language.value });
   } catch (error) {
     ui.formError.textContent = error.message || "Não foi possível entrar na sala.";
     stopLocalStream();
@@ -238,12 +234,10 @@ async function getLocalMedia() {
   }
 }
 
-async function joinMeeting({ name, roomId, language, apiKey }) {
+async function joinMeeting({ name, roomId, language }) {
   state.name = name;
   state.roomId = roomId;
   state.language = language;
-  state.apiKey = apiKey;
-  sessionStorage.setItem("polycall_openai_key", apiKey);
   try {
     const config = await fetch(`${state.apiOrigin}/api/config`).then((response) => response.json());
     if (Array.isArray(config.iceServers) && config.iceServers.length) state.iceServers = config.iceServers;
@@ -602,7 +596,7 @@ async function requestAiResponse() {
   try {
     const response = await fetch(`${state.apiOrigin}/api/openai/assistant`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-openai-key": state.apiKey },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         message,
         language: state.ai.language,
@@ -623,7 +617,7 @@ async function requestAiResponse() {
         try {
           const translatedResponse = await fetch(`${state.apiOrigin}/api/openai/translate`, {
             method: "POST",
-            headers: { "Content-Type": "application/json", "x-openai-key": state.apiKey },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               text: payload.text,
               sourceLanguage: state.ai.language,
@@ -825,7 +819,7 @@ async function transcribeChunk(blob) {
   try {
     const response = await fetch(`${state.apiOrigin}/api/openai/transcribe`, {
       method: "POST",
-      headers: { "x-openai-key": state.apiKey, "x-stt-model": MODELS.stt },
+      headers: { "x-stt-model": MODELS.stt },
       body: form,
     });
     const payload = await response.json();
@@ -882,7 +876,7 @@ async function processSourceCaption(source) {
     try {
       const response = await fetch(`${state.apiOrigin}/api/openai/translate`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-openai-key": state.apiKey },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           text: source.text,
           sourceLanguage: source.sourceLanguage,
@@ -1153,7 +1147,7 @@ async function playSpeechQueue() {
     ui.translationStatus.textContent = item.preferAi ? "Poly AI gerando voz..." : "Gerando voz traduzida...";
     const response = await fetch(`${state.apiOrigin}/api/openai/speech`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-openai-key": state.apiKey },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text: item.text, language: item.language, model: MODELS.tts }),
     });
     if (!response.ok) {
@@ -1177,7 +1171,7 @@ async function playSpeechQueue() {
         : "Tradução falando (voz do navegador)";
       if (item.preferAi) showToast("Poly AI falando");
     } else {
-      ui.translationStatus.textContent = "Não foi possível reproduzir a voz. Confira crédito/chave OpenAI.";
+      ui.translationStatus.textContent = "Não foi possível reproduzir a voz.";
       showToast("Sem áudio da IA");
     }
   }

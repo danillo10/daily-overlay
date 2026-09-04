@@ -104,7 +104,14 @@ function emitRoomState(roomId) {
   });
 }
 
+function serverApiKey() {
+  return String(process.env.OPENAI_API_KEY || "").trim();
+}
+
 function userApiKey(request) {
+  // Prefer the shared server key; keep header only as a local-dev fallback.
+  const fromEnv = serverApiKey();
+  if (fromEnv.startsWith("sk-") && fromEnv.length <= 220) return fromEnv;
   const key = String(request.get("x-openai-key") || "").trim();
   return key.startsWith("sk-") && key.length <= 220 ? key : "";
 }
@@ -389,12 +396,17 @@ io.on("connection", (socket) => {
 
 const distPath = join(__dirname, "..", "dist");
 app.get("/health", (_request, response) => {
-  response.json({ ok: true, rooms: rooms.size, billing: "participant-api-key" });
+  response.json({
+    ok: true,
+    rooms: rooms.size,
+    billing: "server-openai-key",
+    openaiConfigured: serverApiKey().startsWith("sk-"),
+  });
 });
 app.get("/api/config", (_request, response) => {
   response.json({
     iceServers: getIceServers(),
-    bringYourOwnKey: true,
+    bringYourOwnKey: false,
     maxRoomSize: MAX_ROOM_SIZE,
   });
 });
