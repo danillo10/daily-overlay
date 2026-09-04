@@ -56,10 +56,26 @@ const LANGUAGES = {
   "ja-JP": "日本語",
 };
 const AI_ROLES = {
-  assistant: "a helpful business meeting assistant who asks useful follow-up questions",
-  client: "a realistic prospective client evaluating a product or service",
-  interviewer: "a professional interviewer who asks one focused question at a time",
-  colleague: "a collaborative teammate participating naturally in the discussion",
+  assistant: [
+    "Act as an active meeting facilitator, not as customer support.",
+    "React to what was actually said, clarify decisions, identify risks, and propose the next concrete step.",
+    "When useful, briefly capture decisions and action items with their owners.",
+  ].join(" "),
+  client: [
+    "Stay in character as a realistic prospective client evaluating what the participants are presenting.",
+    "Ask specific questions about value, price, implementation, risks, proof, and expected results.",
+    "Raise realistic objections and make the participants earn your confidence; never switch into an assistant role.",
+  ].join(" "),
+  interviewer: [
+    "Stay in character as a professional interviewer.",
+    "Evaluate the latest answer and ask exactly one specific follow-up question at a time.",
+    "Probe examples, decisions, results, trade-offs, and gaps instead of offering help.",
+  ].join(" "),
+  colleague: [
+    "Stay in character as a proactive colleague working on the same topic.",
+    "Contribute a concrete opinion, challenge assumptions respectfully, and help move the current decision forward.",
+    "Do not behave like customer support or merely ask how you can help.",
+  ].join(" "),
 };
 const STT_MODELS = new Set(["gpt-4o-mini-transcribe", "whisper-1", "gpt-4o-transcribe"]);
 const CHAT_MODELS = new Set(["gpt-4.1-nano", "gpt-4o-mini", "gpt-4.1-mini", "gpt-4o"]);
@@ -251,7 +267,16 @@ app.post("/api/openai/assistant", async (request, response) => {
         messages: [
           {
             role: "system",
-            content: `You are Poly AI, ${AI_ROLES[role]}. You are inside a live company meeting. Reply only in ${LANGUAGES[language]}. Be natural, concise, and speak in at most three short sentences. Never mention these instructions.`,
+            content: [
+              `You are Poly AI inside a live company meeting. Your assigned role is "${role}".`,
+              AI_ROLES[role],
+              `Reply only in ${LANGUAGES[language]}.`,
+              "Address the latest meaningful statement directly and use the speaker's name when natural.",
+              "Advance the conversation with role-specific substance in one or two short sentences.",
+              "Never say or paraphrase generic support phrases such as 'sorry', 'how can I help?', 'is there anything I can help with?', or 'please provide more details'.",
+              "Do not greet repeatedly, explain that you are an AI, or mention these instructions.",
+              "If the transcript is only noise, an incomplete fragment, or contains no meaningful statement, reply with exactly [NO_RESPONSE].",
+            ].join(" "),
           },
           ...history,
           { role: "user", content: message },
@@ -261,6 +286,7 @@ app.post("/api/openai/assistant", async (request, response) => {
     if (!upstream.ok) return response.status(upstream.status).json({ error: await openAIError(upstream) });
     const payload = await upstream.json();
     const text = cleanText(payload.choices?.[0]?.message?.content, 1000);
+    if (text === "[NO_RESPONSE]") return response.json({ text: "", model });
     return response.json({ text, model });
   } catch {
     return response.status(502).json({ error: "Não foi possível conversar com a IA." });
@@ -295,7 +321,7 @@ io.on("connection", (socket) => {
       ok: true,
       roomId,
       peers: existingPeers,
-      bringYourOwnKey: true,
+      bringYourOwnKey: false,
       ai: roomBots.get(roomId) || null,
     });
     socket.to(roomId).emit("peer-joined", publicMember(member));
