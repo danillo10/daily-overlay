@@ -93,6 +93,15 @@ function cleanText(value, max = 500) {
   return String(value || "").replace(/\s+/g, " ").trim().slice(0, max);
 }
 
+function looksLikeJunkTranscript(value) {
+  const text = cleanText(value, 900)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "");
+  if (text.length < 2) return true;
+  return /♪|♫|thanks for watching|thank you for watching|subscribe|subtitle|legenda(s)? (por|pela|para)|opening credits|theme song|amara\.org/.test(text);
+}
+
 function cleanRoomId(value) {
   return String(value || "")
     .toUpperCase()
@@ -205,6 +214,10 @@ app.post("/api/openai/transcribe", upload.single("audio"), async (request, respo
   );
   const form = new FormData();
   form.append("model", model);
+  if (model === "whisper-1") {
+    form.append("response_format", "verbose_json");
+    form.append("temperature", "0");
+  }
   const language = cleanText(request.body?.language, 10).slice(0, 2);
   if (language) form.append("language", language);
   const mime = request.file.mimetype || "audio/webm";
@@ -219,7 +232,18 @@ app.post("/api/openai/transcribe", upload.single("audio"), async (request, respo
     }, 30000);
     if (!upstream.ok) return response.status(upstream.status).json({ error: await openAIError(upstream) });
     const payload = await upstream.json();
-    return response.json({ text: cleanText(payload.text, 900), model });
+    const segments = Array.isArray(payload.segments) ? payload.segments : [];
+    const hasReliableSpeech = !segments.length || segments.some((segment) => {
+      const noSpeech = Number(segment?.no_speech_prob);
+      const logProbability = Number(segment?.avg_logprob);
+      return (!Number.isFinite(noSpeech) || noSpeech < 0.6) &&
+        (!Number.isFinite(logProbability) || logProbability > -1.15);
+    });
+    const text = cleanText(payload.text, 900);
+    return response.json({
+      text: hasReliableSpeech && !looksLikeJunkTranscript(text) ? text : "",
+      model,
+    });
   } catch (error) {
     return openAIConnectionFailure(response, error, "Não foi possível transcrever o áudio.");
   }

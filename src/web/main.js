@@ -457,12 +457,16 @@ function attachRemoteStream(peerId, stream) {
   }
   const video = tile.querySelector("video");
   video.srcObject = stream;
-  // Mute element audio and route through GainNode so ducking works reliably.
-  video.muted = true;
+  // Native media-element playback gives browser echo cancellation a clean
+  // reference. Routing remote voices through Web Audio caused mic feedback.
+  video.muted = false;
+  video.volume = duckLevelForPeer(peerId);
+  void video.play().catch(() => {
+    showToast("Toque na tela para liberar o áudio da chamada.");
+  });
   tile.classList.toggle("has-video", stream.getVideoTracks().length > 0);
   updateRemoteTile(peerId);
   updateVideoGridLayout();
-  void wireRemoteAudio(peerId, stream);
   applyRemoteVolumes();
 }
 
@@ -681,9 +685,9 @@ function scheduleAiResponse(source) {
   state.aiBuffer.push(`${source.speakerName}: ${source.text}`);
   state.aiBuffer = state.aiBuffer.slice(-8);
   clearTimeout(state.aiTimer);
-  if (source.turnComplete !== false) {
-    state.aiTimer = setTimeout(requestAiResponse, 850);
-  }
+  // Continuous speech arrives in partial 4s blocks. It still needs a timer,
+  // otherwise room noise can prevent the AI from ever receiving end-of-turn.
+  state.aiTimer = setTimeout(requestAiResponse, source.turnComplete === false ? 1400 : 700);
 }
 
 async function requestAiResponse() {
@@ -928,6 +932,17 @@ function similarTranscript(a, b) {
   return Math.abs(x.length - y.length) < 10 && (x.includes(y) || y.includes(x));
 }
 
+function looksLikeJunkTranscript(text) {
+  const normalized = String(text || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (normalized.length < 2) return true;
+  return /♪|♫|thanks for watching|thank you for watching|subscribe|subtitle|legenda(s)? (por|pela|para)|opening credits|theme song|amara\.org/.test(normalized);
+}
+
 function transcribeChunk(blob, turnComplete = true) {
   if (blob.size < 300) return;
   state.transcriptionQueue.push({ blob, turnComplete });
@@ -956,6 +971,10 @@ async function pumpTranscriptionQueue() {
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Falha na transcrição.");
     const text = String(payload.text || "").trim();
+    if (looksLikeJunkTranscript(text)) {
+      ui.translationStatus.textContent = "Ruído ignorado · ouvindo a conversa...";
+      return;
+    }
     const recentlyRepeated =
       similarTranscript(text, state.lastTranscript) &&
       Date.now() - state.lastTranscriptAt < 2000;
@@ -1372,9 +1391,8 @@ function applyRemoteVolumes() {
     if (participant.id === state.socket?.id) continue;
     const video = document.querySelector(`[data-peer="${participant.id}"] video`);
     if (!video) continue;
-    // Keep muted; Web Audio → HTMLAudioElement owns playback level.
-    video.muted = true;
-    video.volume = 0;
+    video.muted = false;
+    video.volume = duckLevelForPeer(participant.id);
   }
   if (state.ttsAudio && typeof state.ttsAudio.volume === "number") {
     state.ttsAudio.volume = Math.max(0, Math.min(1, state.translatedVolume));
