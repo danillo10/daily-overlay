@@ -256,6 +256,33 @@
             <button id="closeChat" type="button" class="close-chat" aria-label="Fechar transcrição">×</button>
           </div>
         </header>
+        <div class="chat-models">
+          <label>
+            Ouvir
+            <select id="sttModel">
+              <option value="gpt-4o-mini-transcribe">Mais barato · gpt-4o-mini-transcribe</option>
+              <option value="whisper-1">Médio · whisper-1</option>
+              <option value="gpt-4o-transcribe">Mais caro · gpt-4o-transcribe</option>
+            </select>
+          </label>
+          <label>
+            Traduzir / IA
+            <select id="chatModel">
+              <option value="gpt-4.1-nano">Mais barato · gpt-4.1-nano</option>
+              <option value="gpt-4o-mini">Médio · gpt-4o-mini</option>
+              <option value="gpt-4.1-mini">Caro · gpt-4.1-mini</option>
+              <option value="gpt-4o">Mais caro · gpt-4o</option>
+            </select>
+          </label>
+          <label>
+            Falar
+            <select id="ttsModel">
+              <option value="tts-1">Mais barato · tts-1</option>
+              <option value="tts-1-hd">Médio · tts-1-hd</option>
+              <option value="gpt-4o-mini-tts">Mais caro · gpt-4o-mini-tts</option>
+            </select>
+          </label>
+        </div>
         <div id="chatLog" class="chat-log" aria-live="polite">
           <p class="chat-empty">As falas da reunião vão aparecer aqui.</p>
         </div>

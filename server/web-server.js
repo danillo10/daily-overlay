@@ -61,6 +61,14 @@ const AI_ROLES = {
   interviewer: "a professional interviewer who asks one focused question at a time",
   colleague: "a collaborative teammate participating naturally in the discussion",
 };
+const STT_MODELS = new Set(["gpt-4o-mini-transcribe", "whisper-1", "gpt-4o-transcribe"]);
+const CHAT_MODELS = new Set(["gpt-4.1-nano", "gpt-4o-mini", "gpt-4.1-mini", "gpt-4o"]);
+const TTS_MODELS = new Set(["tts-1", "tts-1-hd", "gpt-4o-mini-tts"]);
+
+function pickModel(value, allowed, fallback) {
+  const model = cleanText(value, 64);
+  return allowed.has(model) ? model : fallback;
+}
 
 function cleanText(value, max = 500) {
   return String(value || "").replace(/\s+/g, " ").trim().slice(0, max);
@@ -115,6 +123,7 @@ app.post("/api/openai/translate", async (request, response) => {
   const text = cleanText(request.body?.text, 700);
   const sourceLanguage = LANGUAGES[request.body?.sourceLanguage] ? request.body.sourceLanguage : "auto";
   const targetLanguage = LANGUAGES[request.body?.targetLanguage] ? request.body.targetLanguage : "";
+  const model = pickModel(request.body?.model, CHAT_MODELS, "gpt-4.1-nano");
   if (!apiKey) return response.status(401).json({ error: "Chave OpenAI inválida." });
   if (!text || !targetLanguage) return response.status(400).json({ error: "Texto ou idioma inválido." });
   if (sourceLanguage === targetLanguage) return response.json({ text });
@@ -124,7 +133,7 @@ app.post("/api/openai/translate", async (request, response) => {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "gpt-4.1-nano",
+        model,
         temperature: 0.1,
         messages: [
           {
@@ -150,7 +159,7 @@ app.post("/api/openai/transcribe", upload.single("audio"), async (request, respo
   if (!request.file?.buffer?.length) return response.status(400).json({ error: "Áudio não recebido." });
 
   const form = new FormData();
-  form.append("model", "gpt-4o-mini-transcribe");
+  form.append("model", pickModel(request.body?.model, STT_MODELS, "gpt-4o-mini-transcribe"));
   const language = cleanText(request.body?.language, 10).slice(0, 2);
   if (language) form.append("language", language);
   form.append("file", new Blob([request.file.buffer], { type: request.file.mimetype || "audio/webm" }), "speech.webm");
@@ -172,6 +181,7 @@ app.post("/api/openai/transcribe", upload.single("audio"), async (request, respo
 app.post("/api/openai/speech", async (request, response) => {
   const apiKey = userApiKey(request);
   const text = cleanText(request.body?.text, 1200);
+  const model = pickModel(request.body?.model, TTS_MODELS, "tts-1");
   if (!apiKey) return response.status(401).json({ error: "Chave OpenAI inválida." });
   if (!text) return response.status(400).json({ error: "Texto não recebido." });
 
@@ -179,7 +189,7 @@ app.post("/api/openai/speech", async (request, response) => {
     const upstream = await fetch("https://api.openai.com/v1/audio/speech", {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "tts-1", voice: "alloy", input: text, response_format: "mp3", speed: 1.05 }),
+      body: JSON.stringify({ model, voice: "alloy", input: text, response_format: "mp3", speed: 1.05 }),
     });
     if (!upstream.ok) return response.status(upstream.status).json({ error: await openAIError(upstream) });
     response.set("Content-Type", "audio/mpeg");
@@ -194,6 +204,7 @@ app.post("/api/openai/assistant", async (request, response) => {
   const apiKey = userApiKey(request);
   const language = LANGUAGES[request.body?.language] ? request.body.language : "pt-BR";
   const role = AI_ROLES[request.body?.role] ? request.body.role : "assistant";
+  const model = pickModel(request.body?.model, CHAT_MODELS, "gpt-4.1-nano");
   const message = cleanText(request.body?.message, 1400);
   const history = Array.isArray(request.body?.history)
     ? request.body.history.slice(-10).map((item) => ({
@@ -209,7 +220,7 @@ app.post("/api/openai/assistant", async (request, response) => {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "gpt-4.1-nano",
+        model,
         temperature: 0.7,
         max_tokens: 220,
         messages: [
