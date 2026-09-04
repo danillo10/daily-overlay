@@ -54,6 +54,7 @@ const state = {
   ttsQueue: [],
   ttsPlaying: false,
   ttsAudio: null,
+  listenCooldownUntil: 0,
   ai: null,
   aiHistory: [],
   aiBuffer: [],
@@ -207,17 +208,28 @@ ui.joinForm.addEventListener("submit", async (event) => {
   }
 });
 
+function micAudioConstraints() {
+  // Prefer voiceIsolation when available so only near-mic speech from this call is captured.
+  return {
+    echoCancellation: { ideal: true },
+    noiseSuppression: { ideal: true },
+    autoGainControl: { ideal: true },
+    voiceIsolation: { ideal: true },
+    channelCount: 1,
+  };
+}
+
 async function getLocalMedia() {
   try {
     return await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      audio: micAudioConstraints(),
       video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
     });
   } catch (videoError) {
     try {
       state.cameraEnabled = false;
       return await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        audio: micAudioConstraints(),
         video: false,
       });
     } catch {
@@ -382,20 +394,43 @@ async function ensureAudioCtx() {
   return state.audioCtx;
 }
 
+function disconnectRemoteAudio(routed) {
+  if (!routed) return;
+  try { routed.source.disconnect(); } catch { /* ignore */ }
+  try { routed.gain.disconnect(); } catch { /* ignore */ }
+  try { routed.dest?.disconnect(); } catch { /* ignore */ }
+  if (routed.audioEl) {
+    try {
+      routed.audioEl.pause();
+      routed.audioEl.srcObject = null;
+    } catch { /* ignore */ }
+  }
+}
+
 async function wireRemoteAudio(peerId, stream) {
   if (!stream.getAudioTracks().length) return;
   try {
     const ctx = await ensureAudioCtx();
     const previous = state.remoteGains.get(peerId);
-    if (previous) {
-      try { previous.source.disconnect(); previous.gain.disconnect(); } catch { /* ignore */ }
-    }
+    disconnectRemoteAudio(previous);
+
+    // Play through an HTMLAudioElement so browser AEC can cancel this call's
+    // remote audio from the mic (Web Audio → destination alone skips AEC).
     const source = ctx.createMediaStreamSource(stream);
     const gain = ctx.createGain();
+    const dest = ctx.createMediaStreamDestination();
     gain.gain.value = duckLevelForPeer(peerId);
     source.connect(gain);
-    gain.connect(ctx.destination);
-    state.remoteGains.set(peerId, { source, gain, stream });
+    gain.connect(dest);
+
+    const audioEl = previous?.audioEl || new Audio();
+    audioEl.autoplay = true;
+    audioEl.playsInline = true;
+    audioEl.setAttribute("playsinline", "true");
+    audioEl.srcObject = dest.stream;
+    void audioEl.play().catch(() => {});
+
+    state.remoteGains.set(peerId, { source, gain, dest, audioEl, stream });
   } catch (error) {
     console.error("Remote audio routing failed", error);
   }
@@ -415,7 +450,7 @@ function removePeer(peerId) {
   state.peers.delete(peerId);
   const routed = state.remoteGains.get(peerId);
   if (routed) {
-    try { routed.source.disconnect(); routed.gain.disconnect(); } catch { /* ignore */ }
+    disconnectRemoteAudio(routed);
     state.remoteGains.delete(peerId);
   }
   document.querySelector(`[data-peer="${peerId}"]`)?.remove();
@@ -679,6 +714,15 @@ function startRecognition() {
 
       const tick = () => {
         if (!state.recognitionActive || generation !== state.transcriptionGeneration) return;
+        // Ignore mic while call TTS is playing so speakers/echo aren't transcribed.
+        if (state.ttsPlaying || Date.now() < state.listenCooldownUntil) {
+          if (state.utteranceActive) stopUtteranceRecorder(false);
+          state.speechStarted = false;
+          state.silenceStartedAt = 0;
+          state.utteranceStartedAt = 0;
+          state.vadRaf = requestAnimationFrame(tick);
+          return;
+        }
         analyser.getByteTimeDomainData(data);
         let sum = 0;
         for (let i = 0; i < data.length; i += 1) {
@@ -686,7 +730,7 @@ function startRecognition() {
           sum += centered * centered;
         }
         const rms = Math.sqrt(sum / data.length);
-        const speaking = rms > 0.02;
+        const speaking = rms > 0.028;
 
         if (speaking) {
           state.speechStarted = true;
@@ -828,6 +872,8 @@ async function processSourceCaption(source) {
   // Skip echoes we already handled locally.
   if (!source.isAi && source.speakerId === state.socket?.id) return;
   if (source.isAi && state.ai?.ownerId === state.socket?.id) return;
+  // Only process audio/text from people still in this meeting (or the room AI).
+  if (!source.isAi && !state.participants.some((person) => person.id === source.speakerId)) return;
 
   let text = source.text;
   let translated = false;
@@ -1101,37 +1147,38 @@ function speakBrowser(text, language) {
   });
 }
 
-async function playBlobThroughContext(blob) {
-  const ctx = await ensureAudioCtx();
-  const audioBuffer = await ctx.decodeAudioData(await blob.arrayBuffer());
-  const source = ctx.createBufferSource();
-  const gain = ctx.createGain();
-  gain.gain.value = Math.max(0.2, Math.min(1, state.translatedVolume || 1));
-  source.buffer = audioBuffer;
-  source.connect(gain);
-  gain.connect(ctx.destination);
-  state.ttsAudio = source;
-  await new Promise((resolve) => {
-    source.onended = resolve;
-    try {
-      source.start(0);
-    } catch {
-      resolve();
-    }
-  });
-  return true;
+async function playBlobThroughElement(blob) {
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+  audio.volume = Math.max(0.2, Math.min(1, state.translatedVolume || 1));
+  state.ttsAudio = audio;
+  try {
+    await new Promise((resolve, reject) => {
+      audio.onended = () => resolve();
+      audio.onerror = () => reject(new Error("Falha ao reproduzir áudio"));
+      void audio.play().then(() => {}).catch(reject);
+    });
+    return true;
+  } finally {
+    URL.revokeObjectURL(url);
+    if (state.ttsAudio === audio) state.ttsAudio = null;
+  }
 }
 
 async function playSpeechQueue() {
   if (state.ttsPlaying || !state.ttsQueue.length) return;
   state.ttsPlaying = true;
+  // Drop any in-progress mic capture so TTS isn't transcribed as the user.
+  if (state.utteranceActive) stopUtteranceRecorder(false);
+  state.speechStarted = false;
+  state.silenceStartedAt = 0;
+  state.utteranceStartedAt = 0;
   applyRemoteVolumes();
   const item = state.ttsQueue.shift();
   let played = false;
 
   // OpenAI TTS first (more reliable than browser voices on many devices).
   try {
-    await ensureAudioCtx();
     ui.translationStatus.textContent = item.preferAi ? "Poly AI gerando voz..." : "Gerando voz traduzida...";
     const response = await fetch(`${state.apiOrigin}/api/openai/speech`, {
       method: "POST",
@@ -1142,7 +1189,7 @@ async function playSpeechQueue() {
       const payload = await response.json().catch(() => ({}));
       throw new Error(payload.error || "Falha ao gerar voz.");
     }
-    played = await playBlobThroughContext(await response.blob());
+    played = await playBlobThroughElement(await response.blob());
     if (played) {
       ui.translationStatus.textContent = item.preferAi ? "Poly AI falando" : "Tradução falando";
       if (item.preferAi) showToast("Poly AI falando");
@@ -1166,21 +1213,29 @@ async function playSpeechQueue() {
 
   state.ttsPlaying = false;
   state.ttsAudio = null;
+  state.listenCooldownUntil = Date.now() + 450;
   applyRemoteVolumes();
   void playSpeechQueue();
 }
 
 function duckLevelForPeer(peerId) {
   if (!state.voiceEnabled) return 1;
+  // Only duck audio that belongs to someone still in this meeting.
   const participant = state.participants.find((person) => person.id === peerId);
+  if (!participant) return 0;
   const level = Math.max(0, Math.min(1, state.originalVolume));
   if (state.ttsPlaying) return Math.min(level, 0.05);
-  if (participant && participant.language === state.language) return 1;
+  if (participant.language === state.language) return 1;
   return level;
 }
 
 function applyRemoteVolumes() {
-  for (const [peerId, routed] of state.remoteGains.entries()) {
+  for (const [peerId, routed] of [...state.remoteGains.entries()]) {
+    if (!state.participants.some((person) => person.id === peerId)) {
+      disconnectRemoteAudio(routed);
+      state.remoteGains.delete(peerId);
+      continue;
+    }
     const volume = duckLevelForPeer(peerId);
     try {
       routed.gain.gain.setTargetAtTime(volume, routed.gain.context.currentTime, 0.03);
@@ -1192,11 +1247,13 @@ function applyRemoteVolumes() {
     if (participant.id === state.socket?.id) continue;
     const video = document.querySelector(`[data-peer="${participant.id}"] video`);
     if (!video) continue;
-    // Keep muted; Web Audio GainNode owns playback level.
+    // Keep muted; Web Audio → HTMLAudioElement owns playback level.
     video.muted = true;
     video.volume = 0;
   }
-  if (state.ttsAudio) state.ttsAudio.volume = Math.max(0, Math.min(1, state.translatedVolume));
+  if (state.ttsAudio && typeof state.ttsAudio.volume === "number") {
+    state.ttsAudio.volume = Math.max(0, Math.min(1, state.translatedVolume));
+  }
 }
 
 function syncVolumeUi() {
@@ -1307,9 +1364,17 @@ function leaveMeeting() {
   state.chatMessages = [];
   setChatOpen(false);
   if (state.ttsAudio) {
-    state.ttsAudio.pause();
+    try {
+      state.ttsAudio.pause?.();
+      state.ttsAudio.stop?.();
+      state.ttsAudio.src = "";
+      state.ttsAudio.srcObject = null;
+    } catch { /* ignore */ }
     state.ttsAudio = null;
   }
+  state.ttsPlaying = false;
+  for (const routed of state.remoteGains.values()) disconnectRemoteAudio(routed);
+  state.remoteGains.clear();
   window.speechSynthesis?.cancel();
   clearInterval(state.timer);
   for (const peerId of state.peers.keys()) removePeer(peerId);
