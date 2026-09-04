@@ -44,6 +44,7 @@ const state = {
   transcriptionTimer: null,
   transcriptionGeneration: 0,
   transcriptionBusy: 0,
+  transcriptionQueue: [],
   lastTranscript: "",
   lastAiSpoken: "",
   audioCtx: null,
@@ -55,12 +56,18 @@ const state = {
   silenceStartedAt: 0,
   speechStarted: false,
   utteranceStartedAt: 0,
+  vadNoiseFloor: 0.006,
   remoteGains: new Map(),
+  captionQueue: [],
+  captionBusy: false,
   ttsQueue: [],
   ttsPlaying: false,
   ttsAudio: null,
-  listenCooldownUntil: 0,
+  ttsCurrent: null,
   ai: null,
+  aiWanted: false,
+  aiRole: "assistant",
+  aiLanguage: "pt-BR",
   aiHistory: [],
   aiBuffer: [],
   aiTimer: null,
@@ -304,25 +311,70 @@ function registerSocketEvents() {
 
   state.socket.on("peer-left", ({ id }) => removePeer(id));
   state.socket.on("source-caption", (source) => {
-    processSourceCaption(source);
+    enqueueSourceCaption(source);
     // Own speech already schedules the AI locally after transcription.
     if (!source.isAi && source.speakerId !== state.socket?.id) scheduleAiResponse(source);
   });
   state.socket.on("ai-state", (ai) => {
+    const wasActive = Boolean(state.ai);
     state.ai = ai;
     if (!ai) {
       state.aiHistory = [];
       state.aiBuffer = [];
       clearTimeout(state.aiTimer);
+    } else if (ai.ownerId === state.socket?.id) {
+      state.aiWanted = true;
+      state.aiRole = ai.role;
+      state.aiLanguage = ai.language;
     }
     renderAiState();
     renderParticipants();
+    if (!wasActive && ai?.ownerId === state.socket?.id && !state.aiHistory.length) {
+      state.aiBuffer = [
+        `${state.name}: Você acabou de entrar na reunião como ${ui.aiRole.options[ui.aiRole.selectedIndex]?.text || "participante"}. Apresente-se brevemente já nesse papel e faça uma pergunta específica para iniciar.`,
+      ];
+      clearTimeout(state.aiTimer);
+      state.aiTimer = setTimeout(requestAiResponse, 250);
+    }
   });
   state.socket.on("disconnect", () => {
     ui.connectionLabel.textContent = "Reconectando...";
   });
   state.socket.on("connect", () => {
-    if (state.joinedAt) ui.connectionLabel.textContent = "Conexão estável";
+    if (!state.joinedAt) return;
+    ui.connectionLabel.textContent = "Reconectando à sala...";
+    rejoinRoom();
+  });
+}
+
+function rejoinRoom() {
+  state.socket.emit("join-room", {
+    name: state.name,
+    roomId: state.roomId,
+    language: state.language,
+  }, (response) => {
+    if (!response?.ok) {
+      ui.connectionLabel.textContent = "Falha ao reconectar";
+      showToast(response?.error || "Não foi possível voltar à sala.");
+      return;
+    }
+
+    for (const peerId of [...state.peers.keys()]) removePeer(peerId);
+    state.ai = response.ai || null;
+    for (const peer of response.peers || []) createPeer(peer.id, true);
+    renderAiState();
+    renderParticipants();
+    ui.connectionLabel.textContent = "Conexão estável";
+
+    if (state.aiWanted && !state.ai) {
+      state.socket.emit("set-ai", {
+        active: true,
+        language: state.aiLanguage,
+        role: state.aiRole,
+      }, (result) => {
+        if (!result?.ok) showToast(result?.error || "A IA não conseguiu voltar à sala.");
+      });
+    }
   });
 }
 
@@ -555,6 +607,10 @@ function renderAiState() {
 ui.toggleAi.addEventListener("click", async () => {
   const isOwner = state.ai?.ownerId === state.socket?.id;
   if (state.ai && !isOwner) return;
+  const activating = !state.ai;
+  state.aiWanted = activating;
+  state.aiRole = ui.aiRole.value;
+  state.aiLanguage = ui.aiLanguage.value;
   ui.toggleAi.disabled = true;
   try {
     await ensureAudioCtx();
@@ -568,13 +624,17 @@ ui.toggleAi.addEventListener("click", async () => {
     }
   } catch { /* ignore unlock errors */ }
   state.socket.emit("set-ai", {
-    active: !state.ai,
-    language: ui.aiLanguage.value,
-    role: ui.aiRole.value,
+    active: activating,
+    language: state.aiLanguage,
+    role: state.aiRole,
   }, (result) => {
     ui.toggleAi.disabled = false;
-    if (!result?.ok) showToast(result?.error || "Não foi possível alterar a IA.");
-    else if (!state.ai) showToast("IA adicionada · a voz será ativada nas respostas");
+    if (!result?.ok) {
+      state.aiWanted = Boolean(state.ai);
+      showToast(result?.error || "Não foi possível alterar a IA.");
+    } else if (activating) {
+      showToast("IA adicionada · preparando primeira fala");
+    }
   });
 });
 
@@ -678,6 +738,7 @@ function updateTimer() {
 function startRecognition() {
   state.recognitionActive = false;
   state.transcriptionGeneration += 1;
+  state.transcriptionQueue = [];
   clearTimeout(state.transcriptionTimer);
   cancelAnimationFrame(state.vadRaf);
   stopUtteranceRecorder(false);
@@ -705,15 +766,6 @@ function startRecognition() {
 
       const tick = () => {
         if (!state.recognitionActive || generation !== state.transcriptionGeneration) return;
-        // Ignore mic while call TTS is playing so speakers/echo aren't transcribed.
-        if (state.ttsPlaying || Date.now() < state.listenCooldownUntil) {
-          if (state.utteranceActive) stopUtteranceRecorder(false);
-          state.speechStarted = false;
-          state.silenceStartedAt = 0;
-          state.utteranceStartedAt = 0;
-          state.vadRaf = requestAnimationFrame(tick);
-          return;
-        }
         analyser.getByteTimeDomainData(data);
         let sum = 0;
         for (let i = 0; i < data.length; i += 1) {
@@ -721,7 +773,14 @@ function startRecognition() {
           sum += centered * centered;
         }
         const rms = Math.sqrt(sum / data.length);
-        const speaking = rms > 0.028;
+        // Keep the meeting full-duplex. AEC/voiceIsolation remove played call
+        // audio; an adaptive floor still catches people who speak quietly.
+        const threshold = Math.max(
+          0.01,
+          state.vadNoiseFloor * 2.6,
+          state.ttsPlaying ? 0.024 : 0,
+        );
+        const speaking = rms > threshold;
 
         if (speaking) {
           state.speechStarted = true;
@@ -729,16 +788,24 @@ function startRecognition() {
           if (!state.utteranceActive) {
             state.utteranceStartedAt = Date.now();
             startUtteranceRecorder(audioTrack, generation);
-          } else if (state.utteranceStartedAt && Date.now() - state.utteranceStartedAt >= 5500) {
-            // Force-flush long continuous speech so the pipeline never stalls.
+          } else if (state.utteranceStartedAt && Date.now() - state.utteranceStartedAt >= 4000) {
+            // Stream long speech in useful phrases instead of waiting forever.
             state.speechStarted = false;
             state.silenceStartedAt = 0;
             state.utteranceStartedAt = 0;
             stopUtteranceRecorder(true);
           }
-        } else if (state.speechStarted) {
+        } else {
+          state.vadNoiseFloor = Math.max(
+            0.002,
+            Math.min(0.02, state.vadNoiseFloor * 0.97 + rms * 0.03),
+          );
+          if (!state.speechStarted) {
+            state.vadRaf = requestAnimationFrame(tick);
+            return;
+          }
           if (!state.silenceStartedAt) state.silenceStartedAt = Date.now();
-          if (Date.now() - state.silenceStartedAt >= 1100) {
+          if (Date.now() - state.silenceStartedAt >= 850) {
             state.speechStarted = false;
             state.silenceStartedAt = 0;
             state.utteranceStartedAt = 0;
@@ -748,7 +815,7 @@ function startRecognition() {
         state.vadRaf = requestAnimationFrame(tick);
       };
       state.vadRaf = requestAnimationFrame(tick);
-      ui.translationStatus.textContent = "Ouvindo... ao pausar ~1s a frase vai para o chat/IA.";
+      ui.translationStatus.textContent = "Ouvindo e traduzindo a conversa em tempo real.";
     } catch (error) {
       ui.translationStatus.textContent = error.message || "Não foi possível iniciar a captura de fala.";
     }
@@ -807,10 +874,18 @@ function similarTranscript(a, b) {
   return Math.abs(x.length - y.length) < 10 && (x.includes(y) || y.includes(x));
 }
 
-async function transcribeChunk(blob) {
-  if (blob.size < 900) return;
-  if (state.transcriptionBusy >= 2) return;
-  state.transcriptionBusy += 1;
+function transcribeChunk(blob) {
+  if (blob.size < 300) return;
+  state.transcriptionQueue.push(blob);
+  if (state.transcriptionQueue.length > 10) state.transcriptionQueue.shift();
+  void pumpTranscriptionQueue();
+}
+
+async function pumpTranscriptionQueue() {
+  if (state.transcriptionBusy) return;
+  const blob = state.transcriptionQueue.shift();
+  if (!blob) return;
+  state.transcriptionBusy = 1;
   ui.translationStatus.textContent = "Fechando frase e enviando para interpretação...";
   const form = new FormData();
   form.append("audio", blob, "speech.webm");
@@ -847,9 +922,10 @@ async function transcribeChunk(blob) {
         speakerId: state.socket.id,
         isAi: false,
       });
+      const waitingForAi = state.ai ? " · IA analisando" : "";
       ui.translationStatus.textContent = payload.model
-        ? `Frase enviada (${payload.model}) · aguardando a IA...`
-        : "Frase enviada · aguardando a IA...";
+        ? `Frase enviada para a sala (${payload.model})${waitingForAi}`
+        : `Frase enviada para a sala${waitingForAi}`;
     } else {
       ui.translationStatus.textContent = payload.model
         ? `Aguardando próxima fala · ${payload.model}`
@@ -859,7 +935,30 @@ async function transcribeChunk(blob) {
     ui.translationStatus.textContent = error.message;
     showToast(error.message);
   } finally {
-    state.transcriptionBusy = Math.max(0, state.transcriptionBusy - 1);
+    state.transcriptionBusy = 0;
+    if (state.transcriptionQueue.length) void pumpTranscriptionQueue();
+  }
+}
+
+function enqueueSourceCaption(source) {
+  if (!source?.text?.trim()) return;
+  const duplicate = state.captionQueue.some((item) => item.id === source.id);
+  if (duplicate) return;
+  state.captionQueue.push(source);
+  if (state.captionQueue.length > 20) state.captionQueue.shift();
+  void pumpSourceCaptions();
+}
+
+async function pumpSourceCaptions() {
+  if (state.captionBusy) return;
+  const source = state.captionQueue.shift();
+  if (!source) return;
+  state.captionBusy = true;
+  try {
+    await processSourceCaption(source);
+  } finally {
+    state.captionBusy = false;
+    if (state.captionQueue.length) void pumpSourceCaptions();
   }
 }
 
@@ -867,8 +966,6 @@ async function processSourceCaption(source) {
   // Skip echoes we already handled locally.
   if (!source.isAi && source.speakerId === state.socket?.id) return;
   if (source.isAi && state.ai?.ownerId === state.socket?.id) return;
-  // Only process audio/text from people still in this meeting (or the room AI).
-  if (!source.isAi && !state.participants.some((person) => person.id === source.speakerId)) return;
 
   let text = source.text;
   let translated = false;
@@ -1018,22 +1115,17 @@ ui.copyChat?.addEventListener("click", async () => {
 
 
 function queueSpeech(text, language, options = {}) {
-  if (!text?.trim()) return;
+  const clean = String(text || "").replace(/\s+/g, " ").trim();
+  if (!clean) return;
   if (!state.voiceEnabled) {
     setVoiceEnabled(true);
   }
-  state.ttsQueue = [{ text, language, preferAi: Boolean(options.preferAi) }];
-  if (state.ttsPlaying && state.ttsAudio) {
-    try {
-      state.ttsAudio.stop?.();
-      state.ttsAudio.pause?.();
-      state.ttsAudio.src = "";
-    } catch { /* ignore */ }
-    state.ttsAudio = null;
-    state.ttsPlaying = false;
-  }
-  try { window.speechSynthesis?.cancel(); } catch { /* ignore */ }
-  applyRemoteVolumes();
+  const currentText = state.ttsCurrent?.text;
+  const queued = state.ttsQueue.at(-1);
+  if (currentText === clean || queued?.text === clean) return;
+  state.ttsQueue.push({ text: clean, language, preferAi: Boolean(options.preferAi) });
+  // Bound extreme backlog but never interrupt the phrase currently playing.
+  if (state.ttsQueue.length > 12) state.ttsQueue.splice(0, state.ttsQueue.length - 12);
   void playSpeechQueue();
 }
 
@@ -1133,13 +1225,9 @@ async function playBlobThroughElement(blob) {
 async function playSpeechQueue() {
   if (state.ttsPlaying || !state.ttsQueue.length) return;
   state.ttsPlaying = true;
-  // Drop any in-progress mic capture so TTS isn't transcribed as the user.
-  if (state.utteranceActive) stopUtteranceRecorder(false);
-  state.speechStarted = false;
-  state.silenceStartedAt = 0;
-  state.utteranceStartedAt = 0;
   applyRemoteVolumes();
   const item = state.ttsQueue.shift();
+  state.ttsCurrent = item;
   let played = false;
 
   // OpenAI TTS first (more reliable than browser voices on many devices).
@@ -1178,7 +1266,7 @@ async function playSpeechQueue() {
 
   state.ttsPlaying = false;
   state.ttsAudio = null;
-  state.listenCooldownUntil = Date.now() + 450;
+  state.ttsCurrent = null;
   applyRemoteVolumes();
   void playSpeechQueue();
 }
@@ -1316,6 +1404,7 @@ function stopLocalStream() {
 function stopTranscription() {
   state.recognitionActive = false;
   state.transcriptionGeneration += 1;
+  state.transcriptionQueue = [];
   clearTimeout(state.transcriptionTimer);
   cancelAnimationFrame(state.vadRaf);
   state.speechStarted = false;
