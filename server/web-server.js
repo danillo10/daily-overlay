@@ -189,7 +189,7 @@ app.post("/api/openai/speech", async (request, response) => {
     const upstream = await fetch("https://api.openai.com/v1/audio/speech", {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model, voice: "alloy", input: text, response_format: "mp3", speed: 1.05 }),
+      body: JSON.stringify({ model, voice: "alloy", input: text, response_format: "mp3", speed: 0.92 }),
     });
     if (!upstream.ok) return response.status(upstream.status).json({ error: await openAIError(upstream) });
     response.set("Content-Type", "audio/mpeg");

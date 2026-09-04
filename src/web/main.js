@@ -434,7 +434,7 @@ function setupMeetingUi() {
   ui.connectionLabel.textContent = "Conexão estável";
   ui.toggleCamera.classList.toggle("off", !state.cameraEnabled);
   ui.toggleMic.classList.toggle("off", !state.micEnabled);
-  ui.translationStatus.textContent = "Fale normalmente. Após 2s de silêncio a frase fecha, entra no chat e a tradução fala com o original abaixado.";
+  ui.translationStatus.textContent = "Fale naturalmente. Após ~1s de silêncio a frase fecha e a IA responde mais rápido.";
   void ensureAudioCtx();
   syncVolumeUi();
   applyRemoteVolumes();
@@ -496,7 +496,7 @@ function renderAiState() {
     : "<span>✦</span> Adicionar IA";
   ui.aiHint.textContent = active
     ? isOwner
-      ? "A IA responde após sua pausa de 2s e deve falar em voz alta."
+      ? "A IA responde após ~1s de silêncio e fala em ritmo natural."
       : `${state.ai.ownerName} adicionou a IA à conversa.`
     : "A IA responderá depois que você falar.";
   if (active && isOwner && !state.voiceEnabled) {
@@ -555,7 +555,7 @@ function scheduleAiResponse(source) {
   state.aiBuffer.push(`${source.speakerName}: ${source.text}`);
   state.aiBuffer = state.aiBuffer.slice(-4);
   clearTimeout(state.aiTimer);
-  state.aiTimer = setTimeout(requestAiResponse, 450);
+  state.aiTimer = setTimeout(requestAiResponse, 150);
 }
 
 async function requestAiResponse() {
@@ -631,9 +631,9 @@ async function requestAiResponse() {
     state.aiBusy = false;
     document.querySelector(".ai-tile")?.classList.remove("thinking");
     if (state.ai?.ownerId === state.socket?.id) {
-      ui.aiHint.textContent = "A IA responde após sua pausa de 2s e fala em voz alta.";
+      ui.aiHint.textContent = "A IA responde após ~1s de silêncio e fala em ritmo natural.";
     }
-    if (state.aiBuffer.length) state.aiTimer = setTimeout(requestAiResponse, 500);
+    if (state.aiBuffer.length) state.aiTimer = setTimeout(requestAiResponse, 200);
   }
 }
 
@@ -691,7 +691,7 @@ function startRecognition() {
           if (!state.utteranceActive) startUtteranceRecorder(audioTrack, generation);
         } else if (state.speechStarted) {
           if (!state.silenceStartedAt) state.silenceStartedAt = Date.now();
-          if (Date.now() - state.silenceStartedAt >= 2000) {
+          if (Date.now() - state.silenceStartedAt >= 900) {
             state.speechStarted = false;
             state.silenceStartedAt = 0;
             stopUtteranceRecorder(true);
@@ -700,7 +700,7 @@ function startRecognition() {
         state.vadRaf = requestAnimationFrame(tick);
       };
       state.vadRaf = requestAnimationFrame(tick);
-      ui.translationStatus.textContent = "Aguardando pausa de 2s para fechar a frase e falar a tradução.";
+      ui.translationStatus.textContent = "Aguardando pausa de ~1s para fechar a frase e a IA responder.";
     } catch (error) {
       ui.translationStatus.textContent = error.message || "Não foi possível iniciar a captura de fala.";
     }
@@ -1022,7 +1022,7 @@ function speakBrowser(text, language) {
     try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
     const utter = new SpeechSynthesisUtterance(text);
     utter.lang = language || state.language || "pt-BR";
-    utter.rate = 1.05;
+    utter.rate = 0.92;
     utter.volume = Math.max(0.2, Math.min(1, state.translatedVolume || 1));
     const voice = pickBrowserVoice(utter.lang);
     if (voice) utter.voice = voice;
