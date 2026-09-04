@@ -49,6 +49,7 @@ const state = {
   utteranceActive: false,
   silenceStartedAt: 0,
   speechStarted: false,
+  utteranceStartedAt: 0,
   remoteGains: new Map(),
   ttsQueue: [],
   ttsPlaying: false,
@@ -301,7 +302,8 @@ function registerSocketEvents() {
   state.socket.on("peer-left", ({ id }) => removePeer(id));
   state.socket.on("source-caption", (source) => {
     processSourceCaption(source);
-    if (!source.isAi) scheduleAiResponse(source);
+    // Own speech already schedules the AI locally after transcription.
+    if (!source.isAi && source.speakerId !== state.socket?.id) scheduleAiResponse(source);
   });
   state.socket.on("ai-state", (ai) => {
     state.ai = ai;
@@ -663,6 +665,7 @@ function startRecognition() {
   state.recognitionActive = true;
   state.speechStarted = false;
   state.silenceStartedAt = 0;
+  state.utteranceStartedAt = 0;
   const generation = state.transcriptionGeneration;
   void (async () => {
     try {
@@ -683,24 +686,34 @@ function startRecognition() {
           sum += centered * centered;
         }
         const rms = Math.sqrt(sum / data.length);
-        const speaking = rms > 0.025;
+        const speaking = rms > 0.02;
 
         if (speaking) {
           state.speechStarted = true;
           state.silenceStartedAt = 0;
-          if (!state.utteranceActive) startUtteranceRecorder(audioTrack, generation);
-        } else if (state.speechStarted) {
-          if (!state.silenceStartedAt) state.silenceStartedAt = Date.now();
-          if (Date.now() - state.silenceStartedAt >= 900) {
+          if (!state.utteranceActive) {
+            state.utteranceStartedAt = Date.now();
+            startUtteranceRecorder(audioTrack, generation);
+          } else if (state.utteranceStartedAt && Date.now() - state.utteranceStartedAt >= 5500) {
+            // Force-flush long continuous speech so the pipeline never stalls.
             state.speechStarted = false;
             state.silenceStartedAt = 0;
+            state.utteranceStartedAt = 0;
+            stopUtteranceRecorder(true);
+          }
+        } else if (state.speechStarted) {
+          if (!state.silenceStartedAt) state.silenceStartedAt = Date.now();
+          if (Date.now() - state.silenceStartedAt >= 1100) {
+            state.speechStarted = false;
+            state.silenceStartedAt = 0;
+            state.utteranceStartedAt = 0;
             stopUtteranceRecorder(true);
           }
         }
         state.vadRaf = requestAnimationFrame(tick);
       };
       state.vadRaf = requestAnimationFrame(tick);
-      ui.translationStatus.textContent = "Aguardando pausa de ~1s para fechar a frase e a IA responder.";
+      ui.translationStatus.textContent = "Ouvindo... ao pausar ~1s a frase vai para o chat/IA.";
     } catch (error) {
       ui.translationStatus.textContent = error.message || "Não foi possível iniciar a captura de fala.";
     }
@@ -760,7 +773,7 @@ function similarTranscript(a, b) {
 }
 
 async function transcribeChunk(blob) {
-  if (blob.size < 1800) return;
+  if (blob.size < 900) return;
   if (state.transcriptionBusy >= 2) return;
   state.transcriptionBusy += 1;
   ui.translationStatus.textContent = "Fechando frase e enviando para interpretação...";
@@ -779,20 +792,41 @@ async function transcribeChunk(blob) {
     const text = String(payload.text || "").trim();
     if (text && !similarTranscript(text, state.lastTranscript)) {
       state.lastTranscript = text;
+      // Show the user's own line immediately in chat.
+      handleCaption({
+        id: `local-${Date.now()}`,
+        speakerId: state.socket.id,
+        speakerName: state.name,
+        text,
+        sourceLanguage: state.language,
+        targetLanguage: state.language,
+        translated: false,
+        isAi: false,
+        createdAt: Date.now(),
+      });
       state.socket.emit("transcript", { text, language: state.language });
-      ui.translationStatus.textContent = "Frase completa enviada · aguardando tradução/voz";
+      // Don't wait for the socket echo to ask the AI.
+      scheduleAiResponse({
+        speakerName: state.name,
+        text,
+        speakerId: state.socket.id,
+        isAi: false,
+      });
+      ui.translationStatus.textContent = "Frase enviada · aguardando a IA...";
     } else {
       ui.translationStatus.textContent = "Aguardando próxima fala...";
     }
   } catch (error) {
     ui.translationStatus.textContent = error.message;
+    showToast(error.message);
   } finally {
     state.transcriptionBusy = Math.max(0, state.transcriptionBusy - 1);
   }
 }
 
 async function processSourceCaption(source) {
-  // Owner already rendered/spoke the AI reply locally.
+  // Skip echoes we already handled locally.
+  if (!source.isAi && source.speakerId === state.socket?.id) return;
   if (source.isAi && state.ai?.ownerId === state.socket?.id) return;
 
   let text = source.text;
@@ -828,31 +862,33 @@ async function processSourceCaption(source) {
 }
 
 function handleCaption(caption) {
+  const text = String(caption.text || "").trim();
+  if (!text) return;
+
   ui.captionSpeaker.textContent = caption.speakerName;
   ui.captionLanguage.textContent = caption.isAi
     ? "Poly AI"
     : caption.translated
       ? `Traduzido para ${LANGUAGE_LABELS[caption.targetLanguage]?.name}`
       : "Idioma original";
-  ui.captionText.textContent = caption.text;
+  ui.captionText.textContent = text;
   ui.liveCaption.classList.remove("hidden");
   clearTimeout(state.captionTimer);
   state.captionTimer = setTimeout(() => ui.liveCaption.classList.add("hidden"), 7000);
-  appendChatMessage(caption);
+  appendChatMessage({ ...caption, text });
 
-  if (!state.voiceEnabled || !String(caption.text || "").trim()) return;
-
-  // AI replies must always be spoken for the listener, even in the same language.
+  // Always try to speak AI replies.
   if (caption.isAi) {
-    queueSpeech(caption.text, caption.targetLanguage || state.language, { preferAi: true });
+    queueSpeech(text, caption.targetLanguage || state.language, { preferAi: true });
     return;
   }
 
+  if (!state.voiceEnabled) return;
   if (caption.speakerId === state.socket?.id) return;
 
   const foreignSpeech = caption.sourceLanguage && caption.sourceLanguage !== state.language;
   if (caption.translated || foreignSpeech) {
-    queueSpeech(caption.text, caption.targetLanguage || state.language);
+    queueSpeech(text, caption.targetLanguage || state.language);
   }
 }
 
@@ -1027,10 +1063,14 @@ function speakBrowser(text, language) {
     const voice = pickBrowserVoice(utter.lang);
     if (voice) utter.voice = voice;
     let finished = false;
+    let started = false;
     const finish = (ok) => {
       if (finished) return;
       finished = true;
       resolve(ok);
+    };
+    utter.onstart = () => {
+      started = true;
     };
     utter.onend = () => finish(true);
     utter.onerror = () => finish(false);
@@ -1041,13 +1081,21 @@ function speakBrowser(text, language) {
         clearInterval(poll);
         return;
       }
-      if (!window.speechSynthesis.speaking && !window.speechSynthesis.pending && Date.now() - startedAt > 400) {
+      if (window.speechSynthesis.speaking || window.speechSynthesis.pending) started = true;
+      if (started && !window.speechSynthesis.speaking && !window.speechSynthesis.pending) {
         clearInterval(poll);
         finish(true);
+        return;
+      }
+      // If synthesis never starts, fail fast so OpenAI TTS can take over.
+      if (!started && Date.now() - startedAt > 1200) {
+        clearInterval(poll);
+        finish(false);
+        return;
       }
       if (Date.now() - startedAt > 20000) {
         clearInterval(poll);
-        finish(window.speechSynthesis.speaking);
+        finish(started);
       }
     }, 150);
   });
@@ -1081,37 +1129,26 @@ async function playSpeechQueue() {
   const item = state.ttsQueue.shift();
   let played = false;
 
-  // Prefer browser voice first for AI so speech is instant and reliable.
-  if (item.preferAi) {
-    ui.translationStatus.textContent = "Poly AI preparando voz...";
-    played = await speakBrowser(item.text, item.language);
+  // OpenAI TTS first (more reliable than browser voices on many devices).
+  try {
+    await ensureAudioCtx();
+    ui.translationStatus.textContent = item.preferAi ? "Poly AI gerando voz..." : "Gerando voz traduzida...";
+    const response = await fetch(`${state.apiOrigin}/api/openai/speech`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-openai-key": state.apiKey },
+      body: JSON.stringify({ text: item.text, language: item.language, model: selectedModels().ttsModel }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || "Falha ao gerar voz.");
+    }
+    played = await playBlobThroughContext(await response.blob());
     if (played) {
-      ui.translationStatus.textContent = "Poly AI falando";
-      showToast("Poly AI falando");
+      ui.translationStatus.textContent = item.preferAi ? "Poly AI falando" : "Tradução falando";
+      if (item.preferAi) showToast("Poly AI falando");
     }
-  }
-
-  if (!played) {
-    try {
-      await ensureAudioCtx();
-      const response = await fetch(`${state.apiOrigin}/api/openai/speech`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-openai-key": state.apiKey },
-        body: JSON.stringify({ text: item.text, language: item.language, model: selectedModels().ttsModel }),
-      });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        throw new Error(payload.error || "Falha ao gerar voz.");
-      }
-      played = await playBlobThroughContext(await response.blob());
-      if (played) {
-        ui.translationStatus.textContent = item.preferAi
-          ? "Poly AI falando · OpenAI TTS"
-          : "Tradução falando · voz original abaixada";
-      }
-    } catch (error) {
-      ui.translationStatus.textContent = `${error.message} · tentando voz do navegador`;
-    }
+  } catch (error) {
+    ui.translationStatus.textContent = `${error.message} · tentando voz do navegador`;
   }
 
   if (!played) {
@@ -1120,10 +1157,10 @@ async function playSpeechQueue() {
       ui.translationStatus.textContent = item.preferAi
         ? "Poly AI falando (voz do navegador)"
         : "Tradução falando (voz do navegador)";
-      showToast("Poly AI falando");
+      if (item.preferAi) showToast("Poly AI falando");
     } else {
-      ui.translationStatus.textContent = "Não foi possível reproduzir a voz da IA neste navegador.";
-      showToast("IA sem áudio neste navegador");
+      ui.translationStatus.textContent = "Não foi possível reproduzir a voz. Confira crédito/chave OpenAI.";
+      showToast("Sem áudio da IA");
     }
   }
 
