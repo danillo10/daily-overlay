@@ -40,6 +40,7 @@ const state = {
   transcriptionGeneration: 0,
   transcriptionBusy: 0,
   lastTranscript: "",
+  lastAiSpoken: "",
   audioCtx: null,
   analyser: null,
   vadRaf: 0,
@@ -523,10 +524,21 @@ function renderAiState() {
   updateVideoGridLayout();
 }
 
-ui.toggleAi.addEventListener("click", () => {
+ui.toggleAi.addEventListener("click", async () => {
   const isOwner = state.ai?.ownerId === state.socket?.id;
   if (state.ai && !isOwner) return;
   ui.toggleAi.disabled = true;
+  try {
+    await ensureAudioCtx();
+    await ensureVoices();
+    // Unlock browser audio/speech on the same user gesture as adding the AI.
+    if (window.speechSynthesis) {
+      const warm = new SpeechSynthesisUtterance(" ");
+      warm.volume = 0;
+      window.speechSynthesis.speak(warm);
+      window.speechSynthesis.cancel();
+    }
+  } catch { /* ignore unlock errors */ }
   state.socket.emit("set-ai", {
     active: !state.ai,
     language: ui.aiLanguage.value,
@@ -534,6 +546,7 @@ ui.toggleAi.addEventListener("click", () => {
   }, (result) => {
     ui.toggleAi.disabled = false;
     if (!result?.ok) showToast(result?.error || "Não foi possível alterar a IA.");
+    else if (!state.ai) showToast("IA adicionada · a voz será ativada nas respostas");
   });
 });
 
@@ -569,14 +582,57 @@ async function requestAiResponse() {
     if (payload.text) {
       state.aiHistory.push({ role: "user", content: message }, { role: "assistant", content: payload.text });
       state.aiHistory = state.aiHistory.slice(-10);
+
+      let speakText = payload.text;
+      let translated = false;
+      if (state.ai.language !== state.language) {
+        try {
+          const translatedResponse = await fetch(`${state.apiOrigin}/api/openai/translate`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-openai-key": state.apiKey },
+            body: JSON.stringify({
+              text: payload.text,
+              sourceLanguage: state.ai.language,
+              targetLanguage: state.language,
+              model: selectedModels().chatModel,
+            }),
+          });
+          const translatedPayload = await translatedResponse.json();
+          if (!translatedResponse.ok) throw new Error(translatedPayload.error || "Falha na tradução da IA.");
+          if (translatedPayload.text) {
+            speakText = translatedPayload.text;
+            translated = true;
+          }
+        } catch (error) {
+          ui.translationStatus.textContent = error.message;
+        }
+      }
+
+      state.lastAiSpoken = speakText;
+      // Owner hears/sees immediately without waiting for the socket round-trip.
+      handleCaption({
+        id: `ai-local-${Date.now()}`,
+        speakerId: state.ai.id,
+        speakerName: state.ai.name,
+        text: speakText,
+        original: translated ? payload.text : "",
+        sourceLanguage: state.ai.language,
+        targetLanguage: state.language,
+        translated,
+        isAi: true,
+        createdAt: Date.now(),
+      });
       state.socket.emit("ai-response", { text: payload.text });
     }
   } catch (error) {
     ui.translationStatus.textContent = error.message;
+    showToast(error.message);
   } finally {
     state.aiBusy = false;
     document.querySelector(".ai-tile")?.classList.remove("thinking");
-    if (state.ai?.ownerId === state.socket?.id) ui.aiHint.textContent = "A IA está ouvindo e responderá após cada fala.";
+    if (state.ai?.ownerId === state.socket?.id) {
+      ui.aiHint.textContent = "A IA responde após sua pausa de 2s e fala em voz alta.";
+    }
     if (state.aiBuffer.length) state.aiTimer = setTimeout(requestAiResponse, 500);
   }
 }
@@ -736,6 +792,9 @@ async function transcribeChunk(blob) {
 }
 
 async function processSourceCaption(source) {
+  // Owner already rendered/spoke the AI reply locally.
+  if (source.isAi && state.ai?.ownerId === state.socket?.id) return;
+
   let text = source.text;
   let translated = false;
   if (source.sourceLanguage !== state.language) {
@@ -764,6 +823,7 @@ async function processSourceCaption(source) {
     text,
     targetLanguage: state.language,
     translated,
+    isAi: Boolean(source.isAi),
   });
 }
 
@@ -911,11 +971,15 @@ ui.ttsModel?.addEventListener("change", () => {
 });
 
 function queueSpeech(text, language, options = {}) {
-  if (!text?.trim() || !state.voiceEnabled) return;
+  if (!text?.trim()) return;
+  if (!state.voiceEnabled) {
+    setVoiceEnabled(true);
+  }
   state.ttsQueue = [{ text, language, preferAi: Boolean(options.preferAi) }];
   if (state.ttsPlaying && state.ttsAudio) {
     try {
-      state.ttsAudio.pause();
+      state.ttsAudio.stop?.();
+      state.ttsAudio.pause?.();
       state.ttsAudio.src = "";
     } catch { /* ignore */ }
     state.ttsAudio = null;
@@ -924,6 +988,17 @@ function queueSpeech(text, language, options = {}) {
   try { window.speechSynthesis?.cancel(); } catch { /* ignore */ }
   applyRemoteVolumes();
   void playSpeechQueue();
+}
+
+async function ensureVoices() {
+  const existing = window.speechSynthesis?.getVoices?.() || [];
+  if (existing.length) return existing;
+  await new Promise((resolve) => {
+    const done = () => resolve();
+    window.speechSynthesis?.addEventListener?.("voiceschanged", done, { once: true });
+    setTimeout(done, 700);
+  });
+  return window.speechSynthesis?.getVoices?.() || [];
 }
 
 function pickBrowserVoice(lang) {
@@ -938,78 +1013,117 @@ function pickBrowserVoice(lang) {
 }
 
 function speakBrowser(text, language) {
-  return new Promise((resolve) => {
+  return new Promise(async (resolve) => {
     if (!window.speechSynthesis) {
       resolve(false);
       return;
     }
+    await ensureVoices();
+    try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
     const utter = new SpeechSynthesisUtterance(text);
     utter.lang = language || state.language || "pt-BR";
     utter.rate = 1.05;
-    utter.volume = Math.max(0, Math.min(1, state.translatedVolume));
+    utter.volume = Math.max(0.2, Math.min(1, state.translatedVolume || 1));
     const voice = pickBrowserVoice(utter.lang);
     if (voice) utter.voice = voice;
-    utter.onend = () => resolve(true);
-    utter.onerror = () => resolve(false);
+    let finished = false;
+    const finish = (ok) => {
+      if (finished) return;
+      finished = true;
+      resolve(ok);
+    };
+    utter.onend = () => finish(true);
+    utter.onerror = () => finish(false);
     window.speechSynthesis.speak(utter);
+    const startedAt = Date.now();
+    const poll = setInterval(() => {
+      if (finished) {
+        clearInterval(poll);
+        return;
+      }
+      if (!window.speechSynthesis.speaking && !window.speechSynthesis.pending && Date.now() - startedAt > 400) {
+        clearInterval(poll);
+        finish(true);
+      }
+      if (Date.now() - startedAt > 20000) {
+        clearInterval(poll);
+        finish(window.speechSynthesis.speaking);
+      }
+    }, 150);
   });
 }
 
+async function playBlobThroughContext(blob) {
+  const ctx = await ensureAudioCtx();
+  const audioBuffer = await ctx.decodeAudioData(await blob.arrayBuffer());
+  const source = ctx.createBufferSource();
+  const gain = ctx.createGain();
+  gain.gain.value = Math.max(0.2, Math.min(1, state.translatedVolume || 1));
+  source.buffer = audioBuffer;
+  source.connect(gain);
+  gain.connect(ctx.destination);
+  state.ttsAudio = source;
+  await new Promise((resolve) => {
+    source.onended = resolve;
+    try {
+      source.start(0);
+    } catch {
+      resolve();
+    }
+  });
+  return true;
+}
+
 async function playSpeechQueue() {
-  if (state.ttsPlaying || !state.ttsQueue.length || !state.voiceEnabled) return;
+  if (state.ttsPlaying || !state.ttsQueue.length) return;
   state.ttsPlaying = true;
   applyRemoteVolumes();
   const item = state.ttsQueue.shift();
   let played = false;
-  try {
-    await ensureAudioCtx();
-    const response = await fetch(`${state.apiOrigin}/api/openai/speech`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-openai-key": state.apiKey },
-      body: JSON.stringify({ text: item.text, language: item.language, model: selectedModels().ttsModel }),
-    });
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      throw new Error(payload.error || "Falha ao gerar voz.");
+
+  // Prefer browser voice first for AI so speech is instant and reliable.
+  if (item.preferAi) {
+    ui.translationStatus.textContent = "Poly AI preparando voz...";
+    played = await speakBrowser(item.text, item.language);
+    if (played) {
+      ui.translationStatus.textContent = "Poly AI falando";
+      showToast("Poly AI falando");
     }
-    const url = URL.createObjectURL(await response.blob());
-    if (state.ttsAudio) {
-      state.ttsAudio.pause();
-      state.ttsAudio.src = "";
-    }
-    const audio = new Audio(url);
-    state.ttsAudio = audio;
-    audio.volume = Math.max(0, Math.min(1, state.translatedVolume));
-    await new Promise((resolve) => {
-      audio.onended = () => {
-        played = true;
-        resolve();
-      };
-      audio.onerror = resolve;
-      audio.play().then(() => {
-        ui.translationStatus.textContent = item.preferAi
-          ? "Poly AI falando · voz original abaixada"
-          : "Tradução falando · voz original abaixada";
-      }).catch((error) => {
-        ui.translationStatus.textContent = error?.message || "O navegador bloqueou o áudio.";
-        resolve();
-      });
-    });
-    URL.revokeObjectURL(url);
-  } catch (error) {
-    ui.translationStatus.textContent = `${error.message} · tentando voz do navegador`;
   }
 
-  if (!played && state.voiceEnabled) {
-    applyRemoteVolumes();
-    const ok = await speakBrowser(item.text, item.language);
-    if (ok) {
-      played = true;
+  if (!played) {
+    try {
+      await ensureAudioCtx();
+      const response = await fetch(`${state.apiOrigin}/api/openai/speech`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-openai-key": state.apiKey },
+        body: JSON.stringify({ text: item.text, language: item.language, model: selectedModels().ttsModel }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || "Falha ao gerar voz.");
+      }
+      played = await playBlobThroughContext(await response.blob());
+      if (played) {
+        ui.translationStatus.textContent = item.preferAi
+          ? "Poly AI falando · OpenAI TTS"
+          : "Tradução falando · voz original abaixada";
+      }
+    } catch (error) {
+      ui.translationStatus.textContent = `${error.message} · tentando voz do navegador`;
+    }
+  }
+
+  if (!played) {
+    played = await speakBrowser(item.text, item.language);
+    if (played) {
       ui.translationStatus.textContent = item.preferAi
         ? "Poly AI falando (voz do navegador)"
         : "Tradução falando (voz do navegador)";
-    } else if (!ui.translationStatus.textContent.includes("Falha")) {
-      ui.translationStatus.textContent = "Não foi possível reproduzir a voz. Verifique a chave/crédito OpenAI.";
+      showToast("Poly AI falando");
+    } else {
+      ui.translationStatus.textContent = "Não foi possível reproduzir a voz da IA neste navegador.";
+      showToast("IA sem áudio neste navegador");
     }
   }
 
