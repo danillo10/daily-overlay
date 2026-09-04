@@ -16,9 +16,9 @@ const LANGUAGE_LABELS = {
 };
 
 const MODELS = {
-  stt: "gpt-4o-transcribe",
-  chat: "gpt-4o",
-  tts: "gpt-4o-mini-tts",
+  stt: "whisper-1",
+  chat: "gpt-4o-mini",
+  tts: "tts-1-hd",
 };
 
 const state = {

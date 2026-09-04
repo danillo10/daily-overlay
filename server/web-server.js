@@ -80,12 +80,12 @@ const AI_ROLES = {
 const STT_MODELS = new Set(["gpt-4o-mini-transcribe", "whisper-1", "gpt-4o-transcribe"]);
 const CHAT_MODELS = new Set(["gpt-4.1-nano", "gpt-4o-mini", "gpt-4.1-mini", "gpt-4o"]);
 const TTS_MODELS = new Set(["tts-1", "tts-1-hd", "gpt-4o-mini-tts"]);
-const DEFAULT_STT_MODEL = "gpt-4o-transcribe";
-const DEFAULT_CHAT_MODEL = "gpt-4o";
-const DEFAULT_TTS_MODEL = "gpt-4o-mini-tts";
+const DEFAULT_STT_MODEL = "whisper-1";
+const DEFAULT_CHAT_MODEL = "gpt-4o-mini";
+const DEFAULT_TTS_MODEL = "tts-1-hd";
 
 function pickModel(_value, _allowed, fallback) {
-  // Product always uses the highest-quality models; clients cannot override.
+  // Product uses the fixed medium-cost tier; clients cannot override it.
   return fallback;
 }
 
