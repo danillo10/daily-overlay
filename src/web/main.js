@@ -48,6 +48,8 @@ const state = {
   aiBuffer: [],
   aiTimer: null,
   aiBusy: false,
+  chatOpen: false,
+  chatMessages: [],
 };
 
 const ui = {
@@ -85,7 +87,13 @@ const ui = {
   copyInvite: $("copyInvite"),
   toggleMic: $("toggleMic"),
   toggleCamera: $("toggleCamera"),
+  toggleChat: $("toggleChat"),
   leaveMeeting: $("leaveMeeting"),
+  chatOverlay: $("chatOverlay"),
+  chatLog: $("chatLog"),
+  copyChat: $("copyChat"),
+  clearChat: $("clearChat"),
+  closeChat: $("closeChat"),
   liveCaption: $("liveCaption"),
   captionSpeaker: $("captionSpeaker"),
   captionLanguage: $("captionLanguage"),
@@ -639,11 +647,95 @@ function handleCaption(caption) {
   ui.liveCaption.classList.remove("hidden");
   clearTimeout(state.captionTimer);
   state.captionTimer = setTimeout(() => ui.liveCaption.classList.add("hidden"), 7000);
+  appendChatMessage(caption);
 
   if (state.voiceEnabled && (caption.translated || caption.isAi) && caption.speakerId !== state.socket.id) {
     queueSpeech(caption.text, caption.targetLanguage);
   }
 }
+
+function formatChatTime(ms) {
+  const date = new Date(ms || Date.now());
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+function appendChatMessage(caption) {
+  const text = String(caption.text || "").trim();
+  if (!text) return;
+  const last = state.chatMessages.at(-1);
+  if (last && last.speakerId === caption.speakerId && similarTranscript(last.text, text)) return;
+
+  const entry = {
+    id: caption.id || `${caption.speakerId}-${Date.now()}`,
+    speakerId: caption.speakerId,
+    speakerName: caption.speakerName || "Participante",
+    text,
+    original: caption.original && caption.original !== text ? caption.original : "",
+    translated: Boolean(caption.translated),
+    isAi: Boolean(caption.isAi),
+    createdAt: caption.createdAt || Date.now(),
+  };
+  state.chatMessages.push(entry);
+  if (state.chatMessages.length > 300) state.chatMessages = state.chatMessages.slice(-300);
+  renderChatLog(true);
+}
+
+function renderChatLog(stickToBottom = false) {
+  if (!ui.chatLog) return;
+  if (!state.chatMessages.length) {
+    ui.chatLog.innerHTML = `<p class="chat-empty">As falas da reunião vão aparecer aqui.</p>`;
+    return;
+  }
+  const nearBottom = ui.chatLog.scrollHeight - ui.chatLog.scrollTop - ui.chatLog.clientHeight < 80;
+  ui.chatLog.innerHTML = state.chatMessages.map((message) => {
+    const classes = ["chat-message"];
+    if (message.speakerId === state.socket?.id) classes.push("self");
+    if (message.isAi) classes.push("ai");
+    return `
+      <article class="${classes.join(" ")}">
+        <div class="chat-message-meta">
+          <strong>${escapeHtml(message.speakerName)}</strong>
+          <time>${formatChatTime(message.createdAt)}</time>
+          <span>${message.translated ? "Traduzido" : message.isAi ? "IA" : "Original"}</span>
+        </div>
+        <p>${escapeHtml(message.text)}</p>
+        ${message.original ? `<p class="original">${escapeHtml(message.original)}</p>` : ""}
+      </article>
+    `;
+  }).join("");
+  if (stickToBottom || nearBottom) ui.chatLog.scrollTop = ui.chatLog.scrollHeight;
+}
+
+function setChatOpen(open) {
+  state.chatOpen = open;
+  ui.chatOverlay.classList.toggle("hidden", !open);
+  ui.chatOverlay.setAttribute("aria-hidden", open ? "false" : "true");
+  ui.toggleChat.classList.toggle("active", open);
+  ui.toggleChat.setAttribute("aria-pressed", open ? "true" : "false");
+  ui.toggleChat.setAttribute("aria-label", open ? "Fechar transcrição" : "Abrir transcrição");
+  if (open) {
+    renderChatLog(true);
+  }
+}
+
+ui.toggleChat?.addEventListener("click", () => setChatOpen(!state.chatOpen));
+ui.closeChat?.addEventListener("click", () => setChatOpen(false));
+ui.clearChat?.addEventListener("click", () => {
+  state.chatMessages = [];
+  renderChatLog();
+  showToast("Transcrição limpa");
+});
+ui.copyChat?.addEventListener("click", async () => {
+  if (!state.chatMessages.length) {
+    showToast("Ainda não há falas para copiar");
+    return;
+  }
+  const text = state.chatMessages
+    .map((message) => `[${formatChatTime(message.createdAt)}] ${message.speakerName}: ${message.text}`)
+    .join("\n");
+  await navigator.clipboard.writeText(text);
+  showToast("Transcrição copiada");
+});
 
 function queueSpeech(text, language) {
   if (!text?.trim()) return;
@@ -819,6 +911,12 @@ function stopTranscription() {
 function leaveMeeting() {
   stopTranscription();
   state.ttsQueue = [];
+  state.chatMessages = [];
+  setChatOpen(false);
+  if (state.ttsAudio) {
+    state.ttsAudio.pause();
+    state.ttsAudio = null;
+  }
   window.speechSynthesis?.cancel();
   clearInterval(state.timer);
   for (const peerId of state.peers.keys()) removePeer(peerId);

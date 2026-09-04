@@ -97,7 +97,7 @@ svg { width: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-l
 .benefits h3 { margin: 0 0 4px; font-size: 13px; }
 .benefits p { color: var(--muted); margin: 0; font-size: 11px; }
 
-.meeting { height: 100vh; min-height: 590px; display: grid; grid-template-rows: 72px 1fr 82px; background: #07101c; }
+.meeting { position: relative; height: 100vh; min-height: 590px; display: grid; grid-template-rows: 72px 1fr 82px; background: #07101c; }
 .meeting-header { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; padding: 0 25px; border-bottom: 1px solid var(--line); background: #091421; }
 .brand.compact { font-size: 17px; }
 .brand.compact .brand-mark { width: 29px; height: 29px; }
@@ -219,6 +219,7 @@ svg { width: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-l
 .control-button { width: 42px; height: 42px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 50%; background: #152335; color: #dbe3ec; }
 .control-button:hover { border-color: #627086; }
 .control-button.off { background: #4a2630; color: #ffabb2; }
+.control-button.active { border-color: rgba(34,211,182,.45); background: rgba(34,211,182,.14); color: var(--teal); }
 .control-button svg { width: 18px; }
 .control-button .off-icon { display: none; }
 .control-button.off .on-icon { display: none; }
@@ -227,6 +228,84 @@ svg { width: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-l
 .leave-button:hover { background: #f05d69; }
 .leave-button svg { width: 17px; }
 .headphone-note { justify-self: end; }
+.chat-overlay {
+  position: absolute;
+  inset: 72px 0 82px;
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  background: rgba(5, 12, 22, .96);
+  backdrop-filter: blur(16px);
+  border-top: 1px solid var(--line);
+}
+.chat-overlay.hidden { display: none; }
+.chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.chat-header strong { display: block; font-size: 14px; }
+.chat-header small { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }
+.chat-header-actions { display: flex; align-items: center; gap: 8px; }
+.chat-header-actions button {
+  height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #122032;
+  color: #dce4ed;
+  padding: 0 12px;
+  font-size: 11px;
+}
+.chat-header-actions button.ghost { background: transparent; }
+.chat-header-actions .close-chat {
+  width: 34px;
+  padding: 0;
+  font-size: 20px;
+  line-height: 1;
+}
+.chat-log {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.chat-empty {
+  margin: auto;
+  color: #718095;
+  font-size: 13px;
+}
+.chat-message {
+  max-width: min(720px, 100%);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #0d1a2a;
+  padding: 12px 14px;
+}
+.chat-message.self { align-self: flex-end; border-color: rgba(34,211,182,.2); background: rgba(34,211,182,.08); }
+.chat-message.ai { border-color: rgba(132,108,224,.28); background: rgba(132,108,224,.1); }
+.chat-message-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.chat-message-meta strong { font-size: 12px; color: var(--teal); }
+.chat-message.ai .chat-message-meta strong { color: #c3b8fa; }
+.chat-message-meta time { color: #718095; font-size: 10px; }
+.chat-message-meta span { margin-left: auto; color: #8795a7; font-size: 9px; letter-spacing: .04em; text-transform: uppercase; }
+.chat-message p { margin: 0; color: #e8eef5; font-size: 14px; line-height: 1.5; }
+.chat-message .original {
+  margin-top: 8px;
+  color: #8090a4;
+  font-size: 12px;
+  line-height: 1.4;
+}
 .toast { position: fixed; z-index: 20; left: 50%; bottom: 24px; transform: translate(-50%, 20px); padding: 11px 16px; border: 1px solid var(--line); border-radius: 8px; background: #142234; color: #e9eef4; opacity: 0; pointer-events: none; font-size: 11px; transition: .25s; box-shadow: 0 12px 30px rgba(0,0,0,.3); }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
 
@@ -241,6 +320,7 @@ svg { width: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-l
   .meeting { grid-template-rows: 58px 1fr 74px; min-height: 100dvh; height: 100dvh; }
   .meeting-body { grid-template-columns: 1fr; }
   .sidebar { display: none; }
+  .chat-overlay { inset: 58px 0 74px; }
   .stage { padding: 8px; }
   .video-grid { gap: 8px; }
   .video-grid[data-count="2"] { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
