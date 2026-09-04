@@ -14,7 +14,7 @@ const CLIENT_ORIGINS = String(process.env.CLIENT_ORIGINS || "")
 const corsOptions = {
   origin: CLIENT_ORIGINS.length ? CLIENT_ORIGINS : true,
   methods: ["GET", "POST"],
-  allowedHeaders: ["Content-Type", "x-openai-key"],
+  allowedHeaders: ["Content-Type", "x-openai-key", "x-stt-model"],
 };
 
 const app = express();
@@ -64,6 +64,9 @@ const AI_ROLES = {
 const STT_MODELS = new Set(["gpt-4o-mini-transcribe", "whisper-1", "gpt-4o-transcribe"]);
 const CHAT_MODELS = new Set(["gpt-4.1-nano", "gpt-4o-mini", "gpt-4.1-mini", "gpt-4o"]);
 const TTS_MODELS = new Set(["tts-1", "tts-1-hd", "gpt-4o-mini-tts"]);
+const DEFAULT_STT_MODEL = "gpt-4o-transcribe";
+const DEFAULT_CHAT_MODEL = "gpt-4o";
+const DEFAULT_TTS_MODEL = "gpt-4o-mini-tts";
 
 function pickModel(value, allowed, fallback) {
   const model = cleanText(value, 64);
@@ -123,10 +126,10 @@ app.post("/api/openai/translate", async (request, response) => {
   const text = cleanText(request.body?.text, 700);
   const sourceLanguage = LANGUAGES[request.body?.sourceLanguage] ? request.body.sourceLanguage : "auto";
   const targetLanguage = LANGUAGES[request.body?.targetLanguage] ? request.body.targetLanguage : "";
-  const model = pickModel(request.body?.model, CHAT_MODELS, "gpt-4.1-nano");
+  const model = pickModel(request.body?.model, CHAT_MODELS, DEFAULT_CHAT_MODEL);
   if (!apiKey) return response.status(401).json({ error: "Chave OpenAI inválida." });
   if (!text || !targetLanguage) return response.status(400).json({ error: "Texto ou idioma inválido." });
-  if (sourceLanguage === targetLanguage) return response.json({ text });
+  if (sourceLanguage === targetLanguage) return response.json({ text, model });
 
   try {
     const upstream = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -147,7 +150,7 @@ app.post("/api/openai/translate", async (request, response) => {
     if (!upstream.ok) return response.status(upstream.status).json({ error: await openAIError(upstream) });
     const payload = await upstream.json();
     const translated = cleanText(payload.choices?.[0]?.message?.content, 900);
-    return response.json({ text: translated || text });
+    return response.json({ text: translated || text, model });
   } catch {
     return response.status(502).json({ error: "Não foi possível acessar a OpenAI." });
   }
@@ -158,8 +161,13 @@ app.post("/api/openai/transcribe", upload.single("audio"), async (request, respo
   if (!apiKey) return response.status(401).json({ error: "Chave OpenAI inválida." });
   if (!request.file?.buffer?.length) return response.status(400).json({ error: "Áudio não recebido." });
 
+  const model = pickModel(
+    request.body?.model || request.get("x-stt-model"),
+    STT_MODELS,
+    DEFAULT_STT_MODEL,
+  );
   const form = new FormData();
-  form.append("model", pickModel(request.body?.model, STT_MODELS, "gpt-4o-mini-transcribe"));
+  form.append("model", model);
   const language = cleanText(request.body?.language, 10).slice(0, 2);
   if (language) form.append("language", language);
   form.append("file", new Blob([request.file.buffer], { type: request.file.mimetype || "audio/webm" }), "speech.webm");
@@ -172,7 +180,7 @@ app.post("/api/openai/transcribe", upload.single("audio"), async (request, respo
     });
     if (!upstream.ok) return response.status(upstream.status).json({ error: await openAIError(upstream) });
     const payload = await upstream.json();
-    return response.json({ text: cleanText(payload.text, 900) });
+    return response.json({ text: cleanText(payload.text, 900), model });
   } catch {
     return response.status(502).json({ error: "Não foi possível transcrever o áudio." });
   }
@@ -181,19 +189,29 @@ app.post("/api/openai/transcribe", upload.single("audio"), async (request, respo
 app.post("/api/openai/speech", async (request, response) => {
   const apiKey = userApiKey(request);
   const text = cleanText(request.body?.text, 1200);
-  const model = pickModel(request.body?.model, TTS_MODELS, "tts-1");
+  const model = pickModel(request.body?.model, TTS_MODELS, DEFAULT_TTS_MODEL);
   if (!apiKey) return response.status(401).json({ error: "Chave OpenAI inválida." });
   if (!text) return response.status(400).json({ error: "Texto não recebido." });
+
+  const speechBody = {
+    model,
+    voice: model === "gpt-4o-mini-tts" ? "coral" : "alloy",
+    input: text,
+    response_format: "mp3",
+  };
+  // speed is only supported by tts-1 / tts-1-hd — sending it breaks gpt-4o-mini-tts.
+  if (model === "tts-1" || model === "tts-1-hd") speechBody.speed = 0.92;
 
   try {
     const upstream = await fetch("https://api.openai.com/v1/audio/speech", {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model, voice: "alloy", input: text, response_format: "mp3", speed: 0.92 }),
+      body: JSON.stringify(speechBody),
     });
     if (!upstream.ok) return response.status(upstream.status).json({ error: await openAIError(upstream) });
     response.set("Content-Type", "audio/mpeg");
     response.set("Cache-Control", "no-store");
+    response.set("X-PolyCall-Model", model);
     return response.send(Buffer.from(await upstream.arrayBuffer()));
   } catch {
     return response.status(502).json({ error: "Não foi possível gerar a voz traduzida." });
@@ -204,7 +222,7 @@ app.post("/api/openai/assistant", async (request, response) => {
   const apiKey = userApiKey(request);
   const language = LANGUAGES[request.body?.language] ? request.body.language : "pt-BR";
   const role = AI_ROLES[request.body?.role] ? request.body.role : "assistant";
-  const model = pickModel(request.body?.model, CHAT_MODELS, "gpt-4.1-nano");
+  const model = pickModel(request.body?.model, CHAT_MODELS, DEFAULT_CHAT_MODEL);
   const message = cleanText(request.body?.message, 1400);
   const history = Array.isArray(request.body?.history)
     ? request.body.history.slice(-10).map((item) => ({
@@ -236,7 +254,7 @@ app.post("/api/openai/assistant", async (request, response) => {
     if (!upstream.ok) return response.status(upstream.status).json({ error: await openAIError(upstream) });
     const payload = await upstream.json();
     const text = cleanText(payload.choices?.[0]?.message?.content, 1000);
-    return response.json({ text });
+    return response.json({ text, model });
   } catch {
     return response.status(502).json({ error: "Não foi possível conversar com a IA." });
   }

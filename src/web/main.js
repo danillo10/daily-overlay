@@ -62,9 +62,9 @@ const state = {
   aiBusy: false,
   chatOpen: false,
   chatMessages: [],
-  sttModel: sessionStorage.getItem("polycall_stt_model") || "gpt-4o-mini-transcribe",
-  chatModel: sessionStorage.getItem("polycall_chat_model") || "gpt-4.1-nano",
-  ttsModel: sessionStorage.getItem("polycall_tts_model") || "tts-1",
+  sttModel: sessionStorage.getItem("polycall_stt_model") || "gpt-4o-transcribe",
+  chatModel: sessionStorage.getItem("polycall_chat_model") || "gpt-4o",
+  ttsModel: sessionStorage.getItem("polycall_tts_model") || "gpt-4o-mini-tts",
 };
 
 const ui = {
@@ -821,14 +821,15 @@ async function transcribeChunk(blob) {
   if (state.transcriptionBusy >= 2) return;
   state.transcriptionBusy += 1;
   ui.translationStatus.textContent = "Fechando frase e enviando para interpretação...";
+  const models = selectedModels();
   const form = new FormData();
   form.append("audio", blob, "speech.webm");
   form.append("language", state.language);
-  form.append("model", selectedModels().sttModel);
+  form.append("model", models.sttModel);
   try {
     const response = await fetch(`${state.apiOrigin}/api/openai/transcribe`, {
       method: "POST",
-      headers: { "x-openai-key": state.apiKey },
+      headers: { "x-openai-key": state.apiKey, "x-stt-model": models.sttModel },
       body: form,
     });
     const payload = await response.json();
@@ -856,9 +857,13 @@ async function transcribeChunk(blob) {
         speakerId: state.socket.id,
         isAi: false,
       });
-      ui.translationStatus.textContent = "Frase enviada · aguardando a IA...";
+      ui.translationStatus.textContent = payload.model
+        ? `Frase enviada (${payload.model}) · aguardando a IA...`
+        : "Frase enviada · aguardando a IA...";
     } else {
-      ui.translationStatus.textContent = "Aguardando próxima fala...";
+      ui.translationStatus.textContent = payload.model
+        ? `Aguardando próxima fala · ${payload.model}`
+        : "Aguardando próxima fala...";
     }
   } catch (error) {
     ui.translationStatus.textContent = error.message;
@@ -1023,9 +1028,9 @@ ui.copyChat?.addEventListener("click", async () => {
 
 function selectedModels() {
   return {
-    sttModel: ui.sttModel?.value || state.sttModel || "gpt-4o-mini-transcribe",
-    chatModel: ui.chatModel?.value || state.chatModel || "gpt-4.1-nano",
-    ttsModel: ui.ttsModel?.value || state.ttsModel || "tts-1",
+    sttModel: ui.sttModel?.value || state.sttModel || "gpt-4o-transcribe",
+    chatModel: ui.chatModel?.value || state.chatModel || "gpt-4o",
+    ttsModel: ui.ttsModel?.value || state.ttsModel || "gpt-4o-mini-tts",
   };
 }
 
