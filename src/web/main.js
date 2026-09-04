@@ -335,6 +335,7 @@ function attachRemoteStream(peerId, stream) {
   video.srcObject = stream;
   tile.classList.toggle("has-video", stream.getVideoTracks().length > 0);
   updateRemoteTile(peerId);
+  updateVideoGridLayout();
   applyRemoteVolumes();
 }
 
@@ -351,6 +352,7 @@ function removePeer(peerId) {
   state.peers.get(peerId)?.close();
   state.peers.delete(peerId);
   document.querySelector(`[data-peer="${peerId}"]`)?.remove();
+  updateVideoGridLayout();
 }
 
 function setupMeetingUi() {
@@ -372,7 +374,13 @@ function setupMeetingUi() {
   applyRemoteVolumes();
   state.timer = setInterval(updateTimer, 1000);
   renderAiState();
+  updateVideoGridLayout();
   updateTimer();
+}
+
+function updateVideoGridLayout() {
+  const count = ui.videoGrid.querySelectorAll(".video-tile").length || 1;
+  ui.videoGrid.dataset.count = String(Math.min(12, count));
 }
 
 function renderParticipants() {
@@ -406,6 +414,7 @@ function renderParticipants() {
   }
   ui.participantList.innerHTML = people.join("");
   for (const participant of state.participants) updateRemoteTile(participant.id);
+  updateVideoGridLayout();
 }
 
 function renderAiState() {
@@ -428,6 +437,7 @@ function renderAiState() {
   let tile = document.querySelector(".ai-tile");
   if (!active) {
     tile?.remove();
+    updateVideoGridLayout();
     return;
   }
   if (!tile) {
@@ -441,6 +451,7 @@ function renderAiState() {
     ui.videoGrid.appendChild(tile);
   }
   tile.querySelector(".tile-status span").textContent = LANGUAGE_LABELS[state.ai.language]?.short || "AI";
+  updateVideoGridLayout();
 }
 
 ui.toggleAi.addEventListener("click", () => {
