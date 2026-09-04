@@ -1,7 +1,10 @@
 import { io } from "socket.io-client";
 
 const $ = (id) => document.getElementById(id);
-const API_ORIGIN = String(import.meta.env.VITE_API_URL || (import.meta.env.DEV ? "http://localhost:3000" : location.origin)).replace(/\/$/, "");
+const API_ORIGIN = String(
+  import.meta.env.VITE_API_URL ||
+  (import.meta.env.DEV ? "http://localhost:3000" : "https://polycall-api-production.up.railway.app"),
+).replace(/\/$/, "");
 const LANGUAGE_LABELS = {
   "pt-BR": { short: "PT", name: "Português" },
   "en-US": { short: "EN", name: "English" },
