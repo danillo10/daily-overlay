@@ -38,6 +38,11 @@ const state = {
   transcriptionGeneration: 0,
   ttsQueue: [],
   ttsPlaying: false,
+  ai: null,
+  aiHistory: [],
+  aiBuffer: [],
+  aiTimer: null,
+  aiBusy: false,
 };
 
 const ui = {
@@ -76,6 +81,12 @@ const ui = {
   captionSpeaker: $("captionSpeaker"),
   captionLanguage: $("captionLanguage"),
   captionText: $("captionText"),
+  aiPanel: document.querySelector(".ai-panel"),
+  aiSettings: $("aiSettings"),
+  aiRole: $("aiRole"),
+  aiLanguage: $("aiLanguage"),
+  toggleAi: $("toggleAi"),
+  aiHint: $("aiHint"),
   toast: $("toast"),
 };
 
@@ -207,6 +218,7 @@ async function joinMeeting({ name, roomId, language, apiKey }) {
         reject(new Error(response?.error || "Não foi possível entrar na sala."));
         return;
       }
+      state.ai = response.ai || null;
       for (const peer of response.peers) createPeer(peer.id, true);
       resolve();
     });
@@ -248,7 +260,20 @@ function registerSocketEvents() {
   });
 
   state.socket.on("peer-left", ({ id }) => removePeer(id));
-  state.socket.on("source-caption", processSourceCaption);
+  state.socket.on("source-caption", (source) => {
+    processSourceCaption(source);
+    if (!source.isAi) scheduleAiResponse(source);
+  });
+  state.socket.on("ai-state", (ai) => {
+    state.ai = ai;
+    if (!ai) {
+      state.aiHistory = [];
+      state.aiBuffer = [];
+      clearTimeout(state.aiTimer);
+    }
+    renderAiState();
+    renderParticipants();
+  });
   state.socket.on("disconnect", () => {
     ui.connectionLabel.textContent = "Reconectando...";
   });
@@ -335,14 +360,15 @@ function setupMeetingUi() {
   ui.toggleMic.classList.toggle("off", !state.micEnabled);
   ui.translationStatus.textContent = "Sua chave paga somente sua transcrição, traduções e voz. Ela não é armazenada no servidor.";
   state.timer = setInterval(updateTimer, 1000);
+  renderAiState();
   updateTimer();
 }
 
 function renderParticipants() {
-  const count = state.participants.length;
+  const count = state.participants.length + (state.ai ? 1 : 0);
   ui.participantCount.textContent = `${count} ${count === 1 ? "participante" : "participantes"}`;
   ui.sidebarCount.textContent = count;
-  ui.participantList.innerHTML = state.participants.map((participant) => {
+  const people = state.participants.map((participant) => {
     const self = participant.id === state.socket.id;
     return `
       <div class="participant-row">
@@ -354,8 +380,113 @@ function renderParticipants() {
         <span>${LANGUAGE_LABELS[participant.language]?.short || "--"}</span>
       </div>
     `;
-  }).join("");
+  });
+  if (state.ai) {
+    people.push(`
+      <div class="participant-row ai">
+        <div class="participant-avatar">✦</div>
+        <div class="participant-info">
+          <strong>${escapeHtml(state.ai.name)}</strong>
+          <small>${escapeHtml(LANGUAGE_LABELS[state.ai.language]?.name || state.ai.language)} · IA</small>
+        </div>
+        <span>${LANGUAGE_LABELS[state.ai.language]?.short || "AI"}</span>
+      </div>
+    `);
+  }
+  ui.participantList.innerHTML = people.join("");
   for (const participant of state.participants) updateRemoteTile(participant.id);
+}
+
+function renderAiState() {
+  const active = Boolean(state.ai);
+  const isOwner = state.ai?.ownerId === state.socket?.id;
+  ui.aiPanel.classList.toggle("active", active);
+  ui.aiSettings.classList.toggle("locked", active);
+  ui.aiRole.value = state.ai?.role || ui.aiRole.value;
+  ui.aiLanguage.value = state.ai?.language || ui.aiLanguage.value;
+  ui.toggleAi.disabled = active && !isOwner;
+  ui.toggleAi.innerHTML = active
+    ? isOwner ? "<span>×</span> Remover IA" : "<span>✦</span> IA na sala"
+    : "<span>✦</span> Adicionar IA";
+  ui.aiHint.textContent = active
+    ? isOwner
+      ? "A IA está ouvindo e responderá após cada fala."
+      : `${state.ai.ownerName} adicionou a IA à conversa.`
+    : "A IA responderá depois que você falar.";
+
+  let tile = document.querySelector(".ai-tile");
+  if (!active) {
+    tile?.remove();
+    return;
+  }
+  if (!tile) {
+    tile = document.createElement("article");
+    tile.className = "video-tile ai-tile";
+    tile.innerHTML = `
+      <div class="camera-placeholder"><span>✦</span><p>Participante inteligente</p></div>
+      <div class="tile-info"><span>Poly AI</span><small>IA</small></div>
+      <div class="tile-status"><span>AI</span><i class="mic-indicator"></i></div>
+    `;
+    ui.videoGrid.appendChild(tile);
+  }
+  tile.querySelector(".tile-status span").textContent = LANGUAGE_LABELS[state.ai.language]?.short || "AI";
+}
+
+ui.toggleAi.addEventListener("click", () => {
+  const isOwner = state.ai?.ownerId === state.socket?.id;
+  if (state.ai && !isOwner) return;
+  ui.toggleAi.disabled = true;
+  state.socket.emit("set-ai", {
+    active: !state.ai,
+    language: ui.aiLanguage.value,
+    role: ui.aiRole.value,
+  }, (result) => {
+    ui.toggleAi.disabled = false;
+    if (!result?.ok) showToast(result?.error || "Não foi possível alterar a IA.");
+  });
+});
+
+function scheduleAiResponse(source) {
+  if (!state.ai || state.ai.ownerId !== state.socket?.id) return;
+  state.aiBuffer.push(`${source.speakerName}: ${source.text}`);
+  state.aiBuffer = state.aiBuffer.slice(-4);
+  clearTimeout(state.aiTimer);
+  state.aiTimer = setTimeout(requestAiResponse, 1100);
+}
+
+async function requestAiResponse() {
+  if (state.aiBusy || !state.ai || state.ai.ownerId !== state.socket?.id || !state.aiBuffer.length) return;
+  const message = state.aiBuffer.join("\n");
+  state.aiBuffer = [];
+  state.aiBusy = true;
+  document.querySelector(".ai-tile")?.classList.add("thinking");
+  ui.aiHint.textContent = "Poly AI está pensando...";
+  try {
+    const response = await fetch(`${state.apiOrigin}/api/openai/assistant`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-openai-key": state.apiKey },
+      body: JSON.stringify({
+        message,
+        language: state.ai.language,
+        role: state.ai.role,
+        history: state.aiHistory,
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "A IA não conseguiu responder.");
+    if (payload.text) {
+      state.aiHistory.push({ role: "user", content: message }, { role: "assistant", content: payload.text });
+      state.aiHistory = state.aiHistory.slice(-10);
+      state.socket.emit("ai-response", { text: payload.text });
+    }
+  } catch (error) {
+    ui.translationStatus.textContent = error.message;
+  } finally {
+    state.aiBusy = false;
+    document.querySelector(".ai-tile")?.classList.remove("thinking");
+    if (state.ai?.ownerId === state.socket?.id) ui.aiHint.textContent = "A IA está ouvindo e responderá após cada fala.";
+    if (state.aiBuffer.length) state.aiTimer = setTimeout(requestAiResponse, 500);
+  }
 }
 
 function updateTimer() {
@@ -467,7 +598,9 @@ function handleCaption(caption) {
   clearTimeout(state.captionTimer);
   state.captionTimer = setTimeout(() => ui.liveCaption.classList.add("hidden"), 7000);
 
-  if (state.voiceEnabled && caption.translated && caption.speakerId !== state.socket.id) queueSpeech(caption.text, caption.targetLanguage);
+  if (state.voiceEnabled && (caption.translated || caption.isAi) && caption.speakerId !== state.socket.id) {
+    queueSpeech(caption.text, caption.targetLanguage);
+  }
 }
 
 function queueSpeech(text, language) {

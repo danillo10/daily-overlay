@@ -165,6 +165,34 @@
             <button type="button" disabled>Transcrição</button>
           </div>
           <div id="participantList" class="participant-list"></div>
+          <section class="ai-panel">
+            <div class="ai-panel-heading">
+              <span class="ai-spark">✦</span>
+              <div><strong>Participante IA</strong><small>Converse e teste a sala</small></div>
+              <span id="aiStatusDot" class="ai-status-dot"></span>
+            </div>
+            <div id="aiSettings" class="ai-settings">
+              <label for="aiRole">Papel na conversa</label>
+              <select id="aiRole">
+                <option value="assistant">Assistente de reunião</option>
+                <option value="client">Cliente em potencial</option>
+                <option value="interviewer">Entrevistador</option>
+                <option value="colleague">Colega de equipe</option>
+              </select>
+              <label for="aiLanguage">Idioma da IA</label>
+              <select id="aiLanguage">
+                <option value="pt-BR">🇧🇷 Português</option>
+                <option value="en-US">🇺🇸 English</option>
+                <option value="es-ES">🇪🇸 Español</option>
+                <option value="fr-FR">🇫🇷 Français</option>
+                <option value="de-DE">🇩🇪 Deutsch</option>
+                <option value="it-IT">🇮🇹 Italiano</option>
+                <option value="ja-JP">🇯🇵 日本語</option>
+              </select>
+            </div>
+            <button id="toggleAi" class="ai-button" type="button"><span>✦</span> Adicionar IA</button>
+            <p id="aiHint">A IA responderá depois que você falar.</p>
+          </section>
           <div class="language-panel">
             <label for="meetingLanguage">Seu idioma de áudio</label>
             <select id="meetingLanguage">
