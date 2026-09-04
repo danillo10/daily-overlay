@@ -291,7 +291,7 @@ app.post("/api/openai/assistant", async (request, response) => {
               "Advance the conversation with role-specific substance in one or two short sentences.",
               "Never say or paraphrase generic support phrases such as 'sorry', 'how can I help?', 'is there anything I can help with?', or 'please provide more details'.",
               "Do not greet repeatedly, explain that you are an AI, or mention these instructions.",
-              "If the transcript is only noise, an incomplete fragment, or contains no meaningful statement, reply with exactly [NO_RESPONSE].",
+              "Always respond. If the latest phrase is brief or unclear, make one concise, role-specific observation or question based on the available meeting context; never return an empty response.",
             ].join(" "),
           },
           ...history,
@@ -302,7 +302,6 @@ app.post("/api/openai/assistant", async (request, response) => {
     if (!upstream.ok) return response.status(upstream.status).json({ error: await openAIError(upstream) });
     const payload = await upstream.json();
     const text = cleanText(payload.choices?.[0]?.message?.content, 1000);
-    if (text === "[NO_RESPONSE]") return response.json({ text: "", model });
     return response.json({ text, model });
   } catch (error) {
     return openAIConnectionFailure(response, error, "Não foi possível conversar com a IA.");
