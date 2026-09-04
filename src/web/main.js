@@ -40,6 +40,15 @@ const state = {
   transcriptionGeneration: 0,
   transcriptionBusy: 0,
   lastTranscript: "",
+  audioCtx: null,
+  analyser: null,
+  vadRaf: 0,
+  utteranceRecorder: null,
+  utteranceChunks: [],
+  utteranceActive: false,
+  silenceStartedAt: 0,
+  speechStarted: false,
+  remoteGains: new Map(),
   ttsQueue: [],
   ttsPlaying: false,
   ttsAudio: null,
@@ -341,10 +350,40 @@ function attachRemoteStream(peerId, stream) {
   }
   const video = tile.querySelector("video");
   video.srcObject = stream;
+  // Mute element audio and route through GainNode so ducking works reliably.
+  video.muted = true;
   tile.classList.toggle("has-video", stream.getVideoTracks().length > 0);
   updateRemoteTile(peerId);
   updateVideoGridLayout();
+  void wireRemoteAudio(peerId, stream);
   applyRemoteVolumes();
+}
+
+async function ensureAudioCtx() {
+  if (!state.audioCtx || state.audioCtx.state === "closed") {
+    state.audioCtx = new AudioContext();
+  }
+  if (state.audioCtx.state === "suspended") await state.audioCtx.resume();
+  return state.audioCtx;
+}
+
+async function wireRemoteAudio(peerId, stream) {
+  if (!stream.getAudioTracks().length) return;
+  try {
+    const ctx = await ensureAudioCtx();
+    const previous = state.remoteGains.get(peerId);
+    if (previous) {
+      try { previous.source.disconnect(); previous.gain.disconnect(); } catch { /* ignore */ }
+    }
+    const source = ctx.createMediaStreamSource(stream);
+    const gain = ctx.createGain();
+    gain.gain.value = duckLevelForPeer(peerId);
+    source.connect(gain);
+    gain.connect(ctx.destination);
+    state.remoteGains.set(peerId, { source, gain, stream });
+  } catch (error) {
+    console.error("Remote audio routing failed", error);
+  }
 }
 
 function updateRemoteTile(peerId) {
@@ -359,6 +398,11 @@ function updateRemoteTile(peerId) {
 function removePeer(peerId) {
   state.peers.get(peerId)?.close();
   state.peers.delete(peerId);
+  const routed = state.remoteGains.get(peerId);
+  if (routed) {
+    try { routed.source.disconnect(); routed.gain.disconnect(); } catch { /* ignore */ }
+    state.remoteGains.delete(peerId);
+  }
   document.querySelector(`[data-peer="${peerId}"]`)?.remove();
   updateVideoGridLayout();
 }
@@ -377,7 +421,8 @@ function setupMeetingUi() {
   ui.connectionLabel.textContent = "Conexão estável";
   ui.toggleCamera.classList.toggle("off", !state.cameraEnabled);
   ui.toggleMic.classList.toggle("off", !state.micEnabled);
-  ui.translationStatus.textContent = "Abaixe a voz original e deixe a tradução em destaque, como no overlay Electron.";
+  ui.translationStatus.textContent = "Fale normalmente. Após 2s de silêncio a frase fecha, entra no chat e a tradução fala com o original abaixado.";
+  void ensureAudioCtx();
   syncVolumeUi();
   applyRemoteVolumes();
   state.timer = setInterval(updateTimer, 1000);
@@ -533,9 +578,8 @@ function startRecognition() {
   state.recognitionActive = false;
   state.transcriptionGeneration += 1;
   clearTimeout(state.transcriptionTimer);
-  if (state.recognition?.state === "recording") {
-    try { state.recognition.stop(); } catch { /* already stopped */ }
-  }
+  cancelAnimationFrame(state.vadRaf);
+  stopUtteranceRecorder(false);
 
   const audioTrack = state.stream.getAudioTracks()[0];
   if (!audioTrack || !window.MediaRecorder) {
@@ -544,33 +588,94 @@ function startRecognition() {
   }
 
   state.recognitionActive = true;
+  state.speechStarted = false;
+  state.silenceStartedAt = 0;
   const generation = state.transcriptionGeneration;
+  void (async () => {
+    try {
+      const ctx = await ensureAudioCtx();
+      const source = ctx.createMediaStreamSource(new MediaStream([audioTrack]));
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 2048;
+      source.connect(analyser);
+      state.analyser = analyser;
+      const data = new Uint8Array(analyser.fftSize);
+
+      const tick = () => {
+        if (!state.recognitionActive || generation !== state.transcriptionGeneration) return;
+        analyser.getByteTimeDomainData(data);
+        let sum = 0;
+        for (let i = 0; i < data.length; i += 1) {
+          const centered = (data[i] - 128) / 128;
+          sum += centered * centered;
+        }
+        const rms = Math.sqrt(sum / data.length);
+        const speaking = rms > 0.025;
+
+        if (speaking) {
+          state.speechStarted = true;
+          state.silenceStartedAt = 0;
+          if (!state.utteranceActive) startUtteranceRecorder(audioTrack, generation);
+        } else if (state.speechStarted) {
+          if (!state.silenceStartedAt) state.silenceStartedAt = Date.now();
+          if (Date.now() - state.silenceStartedAt >= 2000) {
+            state.speechStarted = false;
+            state.silenceStartedAt = 0;
+            stopUtteranceRecorder(true);
+          }
+        }
+        state.vadRaf = requestAnimationFrame(tick);
+      };
+      state.vadRaf = requestAnimationFrame(tick);
+      ui.translationStatus.textContent = "Aguardando pausa de 2s para fechar a frase e falar a tradução.";
+    } catch (error) {
+      ui.translationStatus.textContent = error.message || "Não foi possível iniciar a captura de fala.";
+    }
+  })();
+}
+
+function startUtteranceRecorder(audioTrack, generation) {
+  if (state.utteranceActive || generation !== state.transcriptionGeneration) return;
   const mimeType = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"]
     .find((type) => MediaRecorder.isTypeSupported(type));
-
-  const recordChunk = () => {
-    if (!state.recognitionActive || !state.micEnabled || generation !== state.transcriptionGeneration) return;
-    const chunks = [];
-    const recorder = new MediaRecorder(new MediaStream([audioTrack]), mimeType ? { mimeType } : undefined);
-    state.recognition = recorder;
-    recorder.ondataavailable = (event) => {
-      if (event.data.size) chunks.push(event.data);
-    };
-    recorder.onstop = () => {
-      if (chunks.length && generation === state.transcriptionGeneration) {
-        // Fire-and-forget keeps listening continuous while OpenAI processes prior chunks.
-        void transcribeChunk(new Blob(chunks, { type: recorder.mimeType || "audio/webm" }));
-      }
-      if (state.recognitionActive && state.micEnabled && generation === state.transcriptionGeneration) {
-        state.transcriptionTimer = setTimeout(recordChunk, 20);
-      }
-    };
-    recorder.start();
-    state.transcriptionTimer = setTimeout(() => {
-      if (recorder.state === "recording") recorder.stop();
-    }, 1800);
+  const chunks = [];
+  const recorder = new MediaRecorder(new MediaStream([audioTrack]), mimeType ? { mimeType } : undefined);
+  state.utteranceChunks = chunks;
+  state.utteranceRecorder = recorder;
+  state.utteranceActive = true;
+  state.recognition = recorder;
+  recorder.ondataavailable = (event) => {
+    if (event.data.size) chunks.push(event.data);
   };
-  recordChunk();
+  recorder.onstop = () => {
+    state.utteranceActive = false;
+    state.utteranceRecorder = null;
+    if (!recorder._shouldFlush || generation !== state.transcriptionGeneration) return;
+    if (!chunks.length) return;
+    void transcribeChunk(new Blob(chunks, { type: recorder.mimeType || "audio/webm" }));
+  };
+  try {
+    recorder.start(250);
+  } catch (error) {
+    state.utteranceActive = false;
+    ui.translationStatus.textContent = error.message || "Falha ao gravar a fala.";
+  }
+}
+
+function stopUtteranceRecorder(shouldFlush) {
+  const recorder = state.utteranceRecorder;
+  if (!recorder) {
+    state.utteranceActive = false;
+    return;
+  }
+  recorder._shouldFlush = Boolean(shouldFlush);
+  if (recorder.state === "recording") {
+    try { recorder.requestData(); } catch { /* ignore */ }
+    try { recorder.stop(); } catch { /* ignore */ }
+  } else {
+    state.utteranceActive = false;
+    state.utteranceRecorder = null;
+  }
 }
 
 function similarTranscript(a, b) {
@@ -582,9 +687,10 @@ function similarTranscript(a, b) {
 }
 
 async function transcribeChunk(blob) {
-  if (blob.size < 1200) return;
+  if (blob.size < 1800) return;
   if (state.transcriptionBusy >= 2) return;
   state.transcriptionBusy += 1;
+  ui.translationStatus.textContent = "Fechando frase e enviando para interpretação...";
   const form = new FormData();
   form.append("audio", blob, "speech.webm");
   form.append("language", state.language);
@@ -600,8 +706,10 @@ async function transcribeChunk(blob) {
     if (text && !similarTranscript(text, state.lastTranscript)) {
       state.lastTranscript = text;
       state.socket.emit("transcript", { text, language: state.language });
+      ui.translationStatus.textContent = "Frase completa enviada · aguardando tradução/voz";
+    } else {
+      ui.translationStatus.textContent = "Aguardando próxima fala...";
     }
-    ui.translationStatus.textContent = "Ao vivo · original abaixado · tradução em destaque";
   } catch (error) {
     ui.translationStatus.textContent = error.message;
   } finally {
@@ -649,8 +757,12 @@ function handleCaption(caption) {
   state.captionTimer = setTimeout(() => ui.liveCaption.classList.add("hidden"), 7000);
   appendChatMessage(caption);
 
-  if (state.voiceEnabled && (caption.translated || caption.isAi) && caption.speakerId !== state.socket.id) {
-    queueSpeech(caption.text, caption.targetLanguage);
+  const foreignSpeech = caption.sourceLanguage && caption.sourceLanguage !== state.language;
+  const shouldSpeak = state.voiceEnabled
+    && caption.speakerId !== state.socket.id
+    && (caption.isAi || caption.translated || foreignSpeech);
+  if (shouldSpeak) {
+    queueSpeech(caption.text, caption.targetLanguage || state.language);
   }
 }
 
@@ -739,7 +851,6 @@ ui.copyChat?.addEventListener("click", async () => {
 
 function queueSpeech(text, language) {
   if (!text?.trim()) return;
-  // Keep only the newest phrase so the meeting stays near live instead of stacking delay.
   state.ttsQueue = [{ text, language }];
   if (state.ttsPlaying && state.ttsAudio) {
     try {
@@ -748,8 +859,8 @@ function queueSpeech(text, language) {
     } catch { /* ignore */ }
     state.ttsAudio = null;
     state.ttsPlaying = false;
-    applyRemoteVolumes();
   }
+  applyRemoteVolumes();
   playSpeechQueue();
 }
 
@@ -759,13 +870,14 @@ async function playSpeechQueue() {
   applyRemoteVolumes();
   const item = state.ttsQueue.shift();
   try {
+    await ensureAudioCtx();
     const response = await fetch(`${state.apiOrigin}/api/openai/speech`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-openai-key": state.apiKey },
       body: JSON.stringify(item),
     });
     if (!response.ok) {
-      const payload = await response.json();
+      const payload = await response.json().catch(() => ({}));
       throw new Error(payload.error || "Falha ao gerar voz.");
     }
     const url = URL.createObjectURL(await response.blob());
@@ -779,7 +891,12 @@ async function playSpeechQueue() {
     await new Promise((resolve) => {
       audio.onended = resolve;
       audio.onerror = resolve;
-      audio.play().catch(resolve);
+      audio.play().then(() => {
+        ui.translationStatus.textContent = "Tradução falando · voz original abaixada";
+      }).catch((error) => {
+        ui.translationStatus.textContent = error?.message || "O navegador bloqueou o áudio traduzido.";
+        resolve();
+      });
     });
     URL.revokeObjectURL(url);
   } catch (error) {
@@ -792,24 +909,31 @@ async function playSpeechQueue() {
   }
 }
 
-function duckLevel() {
+function duckLevelForPeer(peerId) {
   if (!state.voiceEnabled) return 1;
+  const participant = state.participants.find((person) => person.id === peerId);
   const level = Math.max(0, Math.min(1, state.originalVolume));
-  return state.ttsPlaying ? Math.min(level, 0.08) : level;
+  if (state.ttsPlaying) return Math.min(level, 0.05);
+  if (participant && participant.language === state.language) return 1;
+  return level;
 }
 
 function applyRemoteVolumes() {
-  const volume = duckLevel();
+  for (const [peerId, routed] of state.remoteGains.entries()) {
+    const volume = duckLevelForPeer(peerId);
+    try {
+      routed.gain.gain.setTargetAtTime(volume, routed.gain.context.currentTime, 0.03);
+    } catch {
+      routed.gain.gain.value = volume;
+    }
+  }
   for (const participant of state.participants) {
     if (participant.id === state.socket?.id) continue;
     const video = document.querySelector(`[data-peer="${participant.id}"] video`);
     if (!video) continue;
-    if (!state.voiceEnabled) {
-      video.volume = 1;
-      continue;
-    }
-    // Same language keeps the live voice; other languages are ducked so translated TTS leads.
-    video.volume = participant.language === state.language && !state.ttsPlaying ? 1 : volume;
+    // Keep muted; Web Audio GainNode owns playback level.
+    video.muted = true;
+    video.volume = 0;
   }
   if (state.ttsAudio) state.ttsAudio.volume = Math.max(0, Math.min(1, state.translatedVolume));
 }
@@ -905,7 +1029,10 @@ function stopTranscription() {
   state.recognitionActive = false;
   state.transcriptionGeneration += 1;
   clearTimeout(state.transcriptionTimer);
-  if (state.recognition?.state === "recording") state.recognition.stop();
+  cancelAnimationFrame(state.vadRaf);
+  state.speechStarted = false;
+  state.silenceStartedAt = 0;
+  stopUtteranceRecorder(false);
 }
 
 function leaveMeeting() {
