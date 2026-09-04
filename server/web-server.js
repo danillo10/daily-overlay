@@ -68,9 +68,9 @@ const DEFAULT_STT_MODEL = "gpt-4o-transcribe";
 const DEFAULT_CHAT_MODEL = "gpt-4o";
 const DEFAULT_TTS_MODEL = "gpt-4o-mini-tts";
 
-function pickModel(value, allowed, fallback) {
-  const model = cleanText(value, 64);
-  return allowed.has(model) ? model : fallback;
+function pickModel(_value, _allowed, fallback) {
+  // Product always uses the highest-quality models; clients cannot override.
+  return fallback;
 }
 
 function cleanText(value, max = 500) {

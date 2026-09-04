@@ -15,6 +15,12 @@ const LANGUAGE_LABELS = {
   "ja-JP": { short: "JA", name: "日本語" },
 };
 
+const MODELS = {
+  stt: "gpt-4o-transcribe",
+  chat: "gpt-4o",
+  tts: "gpt-4o-mini-tts",
+};
+
 const state = {
   socket: null,
   stream: null,
@@ -62,9 +68,6 @@ const state = {
   aiBusy: false,
   chatOpen: false,
   chatMessages: [],
-  sttModel: sessionStorage.getItem("polycall_stt_model") || "gpt-4o-transcribe",
-  chatModel: sessionStorage.getItem("polycall_chat_model") || "gpt-4o",
-  ttsModel: sessionStorage.getItem("polycall_tts_model") || "gpt-4o-mini-tts",
 };
 
 const ui = {
@@ -109,9 +112,6 @@ const ui = {
   copyChat: $("copyChat"),
   clearChat: $("clearChat"),
   closeChat: $("closeChat"),
-  sttModel: $("sttModel"),
-  chatModel: $("chatModel"),
-  ttsModel: $("ttsModel"),
   chatVoiceEnabled: $("chatVoiceEnabled"),
   liveCaption: $("liveCaption"),
   captionSpeaker: $("captionSpeaker"),
@@ -127,9 +127,6 @@ const ui = {
 };
 
 ui.apiKey.value = state.apiKey;
-if (ui.sttModel) ui.sttModel.value = state.sttModel;
-if (ui.chatModel) ui.chatModel.value = state.chatModel;
-if (ui.ttsModel) ui.ttsModel.value = state.ttsModel;
 if (ui.voiceEnabled) ui.voiceEnabled.checked = state.voiceEnabled;
 if (ui.chatVoiceEnabled) ui.chatVoiceEnabled.checked = state.voiceEnabled;
 let joinMode = new URLSearchParams(location.search).has("room");
@@ -611,7 +608,7 @@ async function requestAiResponse() {
         language: state.ai.language,
         role: state.ai.role,
         history: state.aiHistory,
-        model: selectedModels().chatModel,
+        model: MODELS.chat,
       }),
     });
     const payload = await response.json();
@@ -631,7 +628,7 @@ async function requestAiResponse() {
               text: payload.text,
               sourceLanguage: state.ai.language,
               targetLanguage: state.language,
-              model: selectedModels().chatModel,
+              model: MODELS.chat,
             }),
           });
           const translatedPayload = await translatedResponse.json();
@@ -821,15 +818,14 @@ async function transcribeChunk(blob) {
   if (state.transcriptionBusy >= 2) return;
   state.transcriptionBusy += 1;
   ui.translationStatus.textContent = "Fechando frase e enviando para interpretação...";
-  const models = selectedModels();
   const form = new FormData();
   form.append("audio", blob, "speech.webm");
   form.append("language", state.language);
-  form.append("model", models.sttModel);
+  form.append("model", MODELS.stt);
   try {
     const response = await fetch(`${state.apiOrigin}/api/openai/transcribe`, {
       method: "POST",
-      headers: { "x-openai-key": state.apiKey, "x-stt-model": models.sttModel },
+      headers: { "x-openai-key": state.apiKey, "x-stt-model": MODELS.stt },
       body: form,
     });
     const payload = await response.json();
@@ -891,7 +887,7 @@ async function processSourceCaption(source) {
           text: source.text,
           sourceLanguage: source.sourceLanguage,
           targetLanguage: state.language,
-          model: selectedModels().chatModel,
+          model: MODELS.chat,
         }),
       });
       const payload = await response.json();
@@ -1026,36 +1022,6 @@ ui.copyChat?.addEventListener("click", async () => {
   showToast("Transcrição copiada");
 });
 
-function selectedModels() {
-  return {
-    sttModel: ui.sttModel?.value || state.sttModel || "gpt-4o-transcribe",
-    chatModel: ui.chatModel?.value || state.chatModel || "gpt-4o",
-    ttsModel: ui.ttsModel?.value || state.ttsModel || "gpt-4o-mini-tts",
-  };
-}
-
-function persistModels() {
-  const models = selectedModels();
-  state.sttModel = models.sttModel;
-  state.chatModel = models.chatModel;
-  state.ttsModel = models.ttsModel;
-  sessionStorage.setItem("polycall_stt_model", models.sttModel);
-  sessionStorage.setItem("polycall_chat_model", models.chatModel);
-  sessionStorage.setItem("polycall_tts_model", models.ttsModel);
-}
-
-ui.sttModel?.addEventListener("change", () => {
-  persistModels();
-  showToast(`Transcrição: ${state.sttModel}`);
-});
-ui.chatModel?.addEventListener("change", () => {
-  persistModels();
-  showToast(`Tradução/IA: ${state.chatModel}`);
-});
-ui.ttsModel?.addEventListener("change", () => {
-  persistModels();
-  showToast(`Voz: ${state.ttsModel}`);
-});
 
 function queueSpeech(text, language, options = {}) {
   if (!text?.trim()) return;
@@ -1188,7 +1154,7 @@ async function playSpeechQueue() {
     const response = await fetch(`${state.apiOrigin}/api/openai/speech`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-openai-key": state.apiKey },
-      body: JSON.stringify({ text: item.text, language: item.language, model: selectedModels().ttsModel }),
+      body: JSON.stringify({ text: item.text, language: item.language, model: MODELS.tts }),
     });
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
