@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/overlayRoot"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="10dp">
+
+    <TextView
+        android:id="@+id/overlayTitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingBottom="4dp"
+        android:text="Tradução PT · arrasta"
+        android:textAllCaps="true"
+        android:textColor="#D9FFFFFF"
+        android:textSize="11sp" />
+
+    <TextView
+        android:id="@+id/overlayEn"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:shadowColor="#000000"
+        android:shadowDx="0"
+        android:shadowDy="2"
+        android:shadowRadius="8"
+        android:textColor="@color/en"
+        android:textSize="15sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/overlayPt"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:shadowColor="#000000"
+        android:shadowDx="0"
+        android:shadowDy="2"
+        android:shadowRadius="8"
+        android:textColor="@color/pt"
+        android:textSize="20sp"
+        android:textStyle="bold" />
+</LinearLayout>

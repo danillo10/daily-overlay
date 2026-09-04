@@ -13,6 +13,7 @@ const BIN = {
   record: "/usr/bin/pw-record",
   link: "/usr/bin/pw-link",
   dump: "/usr/bin/pw-dump",
+  wpctl: "/usr/bin/wpctl",
 };
 
 function hasBin(file) {
@@ -40,8 +41,8 @@ function pipewireGraph() {
   return JSON.parse(run(BIN.dump, []));
 }
 
-function classifySource(binary, mediaName, appName, nodeName) {
-  const hay = `${binary} ${appName} ${mediaName} ${nodeName}`.toLowerCase();
+function classifySource(binary, mediaName, appName, nodeName, description) {
+  const hay = `${binary} ${appName} ${mediaName} ${nodeName} ${description}`.toLowerCase();
   if (/discord/.test(hay) && /playstream|voiceengine/.test(hay)) {
     return { kind: "discord-voice", preferred: true, hint: "voz da call", app: "Discord" };
   }
@@ -60,8 +61,8 @@ function classifySource(binary, mediaName, appName, nodeName) {
   if (/meet\.google|google meet|\bmeet -|\bmeet$/.test(hay)) {
     return { kind: "meet", preferred: true, hint: "reunião", app: "Google Meet" };
   }
-  if (/youtube|youtu\.be/.test(hay)) {
-    return { kind: "youtube", preferred: false, hint: "vídeo", app: "YouTube" };
+  if (/youtube|youtu\.be|- youtube\b/.test(hay)) {
+    return { kind: "youtube", preferred: true, hint: "vídeo", app: "YouTube" };
   }
   if (/chrome|chromium|firefox|brave|msedge|vivaldi|opera/.test(hay)) {
     return { kind: "browser", preferred: false, hint: "aba do navegador", app: prettyBrowser(binary, appName) };
@@ -88,19 +89,73 @@ function sourceKey(kind, binary, mediaName) {
   return `${kind}|${binary}|${mediaName}`;
 }
 
-function pickSource(sources, requestedId, requestedKey) {
+function streamTitle(mediaName, description, nodeName, id) {
+  const title = String(mediaName || "").trim();
+  if (title && !/^playback$/i.test(title)) return title;
+  const desc = String(description || "").trim();
+  if (desc && !/^google chrome$|^chromium$|^firefox$/i.test(desc)) return desc;
+  const node = String(nodeName || "").trim();
+  if (node && !/^chrome$|^chromium$|^firefox$/i.test(node)) return node;
+  return `aba ${id}`;
+}
+
+function isRunning(source) {
+  const state = String(source.state || "").toLowerCase();
+  return state === "running" || state === "active";
+}
+
+function bestAmong(matches) {
+  if (!matches.length) return null;
+  const running = matches.filter(isRunning);
+  const pool = running.length ? running : matches;
+  pool.sort((a, b) => Number(b.volume || 0) - Number(a.volume || 0) || Number(a.id) - Number(b.id));
+  return pool[0];
+}
+
+function keyMatches(source, requestedKey) {
+  if (!requestedKey) return false;
+  if (source.key === requestedKey || source.stableKey === requestedKey) return true;
+  if (String(source.id) === String(requestedKey)) return true;
+  const parts = String(requestedKey).split("|");
+  if (parts.length >= 2 && source.kind === parts[0] && source.binary === parts[1]) return true;
+  return false;
+}
+
+function pickSource(sources, requestedId, requestedKey, pinnedId) {
+  if (pinnedId) {
+    const pinned = sources.find((item) => Number(item.id) === Number(pinnedId));
+    if (pinned) return pinned;
+  }
   if (requestedId) {
     const byId = sources.find((item) => Number(item.id) === Number(requestedId));
     if (byId) return byId;
   }
   if (requestedKey) {
-    return sources.find((item) => item.key === requestedKey) || null;
+    const matches = sources.filter((item) => keyMatches(item, requestedKey));
+    const picked = bestAmong(matches);
+    if (picked) return picked;
   }
   for (const kind of AUTO_KINDS) {
-    const hit = sources.find((item) => item.kind === kind);
+    const hit = bestAmong(sources.filter((item) => item.kind === kind));
     if (hit) return hit;
   }
-  return sources.find((item) => item.kind !== "discord-media") || sources[0] || null;
+  return (
+    bestAmong(sources.filter((item) => item.kind === "youtube" || item.kind === "browser")) ||
+    sources.find((item) => item.kind !== "discord-media") ||
+    sources[0] ||
+    null
+  );
+}
+
+function nodeVolume(nodeId) {
+  if (!hasBin(BIN.wpctl) || nodeId == null) return 0;
+  try {
+    const out = execFileSync(BIN.wpctl, ["get-volume", String(nodeId)], { encoding: "utf8" });
+    const match = String(out).match(/([0-9]*\.?[0-9]+)/);
+    return match ? Number(match[1]) : 0;
+  } catch {
+    return 0;
+  }
 }
 
 function listPlaybackSources() {
@@ -115,18 +170,25 @@ function listPlaybackSources() {
     const mediaName = String(props["media.name"] || "");
     const appName = String(props["application.name"] || "");
     const nodeName = String(props["node.name"] || "");
-    const classified = classifySource(binary, mediaName, appName, nodeName);
-    const streamName = mediaName || nodeName || appName || binary || "áudio";
+    const description = String(props["node.description"] || props["window.title"] || "");
+    const classified = classifySource(binary, mediaName, appName, nodeName, description);
+    const streamName = streamTitle(mediaName, description, nodeName, object.id);
+    const state = String(object.info?.state || "").toLowerCase();
+    const ident = binary || appName || nodeName;
+    const stableKey = sourceKey(classified.kind, ident, mediaName || streamName);
     nodes.push({
       id: object.id,
-      binary: binary || appName || nodeName,
-      mediaName: streamName,
-      key: sourceKey(classified.kind, binary || appName || nodeName, streamName),
+      binary: ident,
+      mediaName: mediaName || streamName,
+      key: `${stableKey}|${object.id}`,
+      stableKey,
       label: `${classified.app} · ${streamName}`,
       preferred: classified.preferred,
       kind: classified.kind,
-      hint: classified.hint,
+      hint: state === "running" ? `${classified.hint} · tocando` : classified.hint,
       app: classified.app,
+      state,
+      volume: nodeVolume(object.id),
     });
   }
   nodes.sort((a, b) => (KIND_RANK[a.kind] ?? 9) - (KIND_RANK[b.kind] ?? 9) || a.label.localeCompare(b.label));
@@ -234,6 +296,9 @@ class LinuxSystemCapture extends EventEmitter {
     this.relinkTimer = null;
     this.requestedId = null;
     this.requestedKey = null;
+    this.duckVolume = null;
+    this.savedVolume = null;
+    this.savedVolumeNode = null;
   }
 
   get available() {
@@ -250,14 +315,7 @@ class LinuxSystemCapture extends EventEmitter {
     this.requestedId = /^\d+$/.test(request) ? Number(request) : null;
     this.requestedKey = this.requestedId || !request ? null : request;
     const sources = listPlaybackSources();
-    this.source = pickSource(sources, this.requestedId, this.requestedKey);
-    if (!this.source) {
-      throw new Error(
-        this.requestedKey
-          ? "Esse canal não está tocando agora. Abre o app (Discord, Teams, Meet, YouTube…) e escolhe de novo."
-          : "Nenhum app tocando áudio. Abre Discord, Teams, Meet ou YouTube e escolhe em Canal de áudio.",
-      );
-    }
+    this.source = pickSource(sources, this.requestedId, this.requestedKey, null);
 
     this.pending = Buffer.alloc(0);
     this.linked = 0;
@@ -289,14 +347,30 @@ class LinuxSystemCapture extends EventEmitter {
     });
 
     this.#linkAll();
+    this.#applyDuck();
     this.relinkTimer = setInterval(() => this.#linkAll(), 3000);
-    return { sinkName: this.source.label, source: this.source };
+    return {
+      sinkName: this.source?.label || "",
+      source: this.source,
+      waiting: !this.source,
+    };
+  }
+
+  setDuckVolume(volume) {
+    if (volume == null) {
+      this.#restoreDuck();
+      this.duckVolume = null;
+      return true;
+    }
+    this.duckVolume = Math.max(0.05, Math.min(0.85, Number(volume)));
+    this.#applyDuck();
+    return true;
   }
 
   #linkAll() {
     if (!this.child) return;
     const sources = listPlaybackSources();
-    const next = pickSource(sources, this.requestedId, this.requestedKey);
+    const next = pickSource(sources, this.requestedId, this.requestedKey, this.source?.id);
     if (next) this.source = next;
     if (!this.source) return;
     const overlayId = overlayNodeId();
@@ -324,6 +398,51 @@ class LinuxSystemCapture extends EventEmitter {
       linked: this.linked,
       source: this.source,
     });
+    this.#applyDuck();
+  }
+
+  #nodeVolume(nodeId) {
+    if (!hasBin(BIN.wpctl) || nodeId == null) return 1;
+    try {
+      const out = execFileSync(BIN.wpctl, ["get-volume", String(nodeId)], { encoding: "utf8" });
+      const match = String(out).match(/([0-9]*\.?[0-9]+)/);
+      return match ? Number(match[1]) : 1;
+    } catch {
+      return 1;
+    }
+  }
+
+  #setNodeVolume(nodeId, volume) {
+    if (!hasBin(BIN.wpctl) || nodeId == null) return false;
+    try {
+      execFileSync(BIN.wpctl, ["set-volume", String(nodeId), String(volume)], { stdio: "ignore" });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  #applyDuck() {
+    if (this.duckVolume == null || !this.source) return;
+    const id = this.source.id;
+    if (this.savedVolumeNode != null && this.savedVolumeNode !== id) {
+      this.#setNodeVolume(this.savedVolumeNode, this.savedVolume);
+      this.savedVolume = null;
+      this.savedVolumeNode = null;
+    }
+    if (this.savedVolumeNode !== id) {
+      this.savedVolume = this.#nodeVolume(id);
+      this.savedVolumeNode = id;
+    }
+    this.#setNodeVolume(id, this.duckVolume);
+  }
+
+  #restoreDuck() {
+    if (this.savedVolumeNode != null && this.savedVolume != null) {
+      this.#setNodeVolume(this.savedVolumeNode, this.savedVolume);
+    }
+    this.savedVolume = null;
+    this.savedVolumeNode = null;
   }
 
   #onData(chunk) {
@@ -332,6 +451,12 @@ class LinuxSystemCapture extends EventEmitter {
       const slice = this.pending.subarray(0, HOP_BYTES);
       this.pending = this.pending.subarray(HOP_BYTES);
       const pcm = s16StereoToMonoFloat32(slice);
+      if (this.duckVolume != null && this.duckVolume > 0.04) {
+        const gain = 1 / this.duckVolume;
+        for (let i = 0; i < pcm.length; i += 1) {
+          pcm[i] = Math.max(-1, Math.min(1, pcm[i] * gain));
+        }
+      }
       const level = rms(pcm);
       this.emit("chunk", {
         samples: Array.from(pcm),
@@ -343,6 +468,8 @@ class LinuxSystemCapture extends EventEmitter {
   }
 
   stop() {
+    this.#restoreDuck();
+    this.duckVolume = null;
     if (this.relinkTimer) {
       clearInterval(this.relinkTimer);
       this.relinkTimer = null;

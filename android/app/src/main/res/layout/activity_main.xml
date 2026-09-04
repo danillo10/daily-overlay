@@ -1,0 +1,235 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="18dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/app_name"
+            android:textColor="@color/text"
+            android:textSize="22sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="14dp"
+            android:text="@string/tagline"
+            android:textColor="@color/muted"
+            android:textSize="13sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="14dp">
+
+            <Button
+                android:id="@+id/btnToggle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_button"
+                android:text="@string/start"
+                android:textAllCaps="false"
+                android:textColor="#1B140B"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/txtStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="@string/ready"
+                android:textColor="@color/muted"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="14dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/language"
+                android:textAllCaps="true"
+                android:textColor="@color/muted"
+                android:textSize="11sp" />
+
+            <Spinner
+                android:id="@+id/spinLanguage"
+                android:layout_width="match_parent"
+                android:layout_height="48dp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/provider"
+                android:textAllCaps="true"
+                android:textColor="@color/muted"
+                android:textSize="11sp" />
+
+            <Spinner
+                android:id="@+id/spinProvider"
+                android:layout_width="match_parent"
+                android:layout_height="48dp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/api_key"
+                android:textAllCaps="true"
+                android:textColor="@color/muted"
+                android:textSize="11sp" />
+
+            <EditText
+                android:id="@+id/edtApiKey"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:autofillHints="password"
+                android:backgroundTint="@color/accent"
+                android:hint="sk-… ou gsk_…"
+                android:inputType="textPassword"
+                android:textColor="@color/text"
+                android:textColorHint="@color/muted" />
+
+            <CheckBox
+                android:id="@+id/chkTranslate"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/translate"
+                android:textColor="@color/text" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/translate_engine"
+                android:textAllCaps="true"
+                android:textColor="@color/muted"
+                android:textSize="11sp" />
+
+            <Spinner
+                android:id="@+id/spinTranslateEngine"
+                android:layout_width="match_parent"
+                android:layout_height="48dp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/overlay_bg"
+                android:textAllCaps="true"
+                android:textColor="@color/muted"
+                android:textSize="11sp" />
+
+            <SeekBar
+                android:id="@+id/seekOpacity"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="90" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="14dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/youtube_title"
+                android:textColor="@color/text"
+                android:textStyle="bold" />
+
+            <EditText
+                android:id="@+id/edtYoutube"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="https://www.youtube.com/watch?v=…"
+                android:inputType="textUri"
+                android:textColor="@color/text"
+                android:textColorHint="@color/muted" />
+
+            <Button
+                android:id="@+id/btnYoutube"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/youtube_go"
+                android:textAllCaps="false" />
+
+            <TextView
+                android:id="@+id/txtYoutube"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Gera SRT EN + PT e salva em Downloads/Daily Overlay. No Android a queima no MP4 fica no app do PC."
+                android:textColor="@color/muted"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="14dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/ata"
+                    android:textColor="@color/text"
+                    android:textStyle="bold" />
+
+                <Button
+                    android:id="@+id/btnCopy"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/copy"
+                    android:textAllCaps="false" />
+
+                <Button
+                    android:id="@+id/btnClear"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/clear"
+                    android:textAllCaps="false" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/txtTranscript"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="160dp"
+                android:textColor="@color/text"
+                android:textIsSelectable="true"
+                android:textSize="13sp" />
+        </LinearLayout>
+    </LinearLayout>
+</ScrollView>

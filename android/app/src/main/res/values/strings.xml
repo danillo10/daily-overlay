@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Daily Overlay</string>
+    <string name="tagline">Legendas ao vivo sobre a reunião</string>
+    <string name="start">Iniciar transcrição</string>
+    <string name="stop">Parar transcrição</string>
+    <string name="language">Idioma</string>
+    <string name="provider">Provedor</string>
+    <string name="api_key">API key</string>
+    <string name="translate">Mostrar tradução PT no overlay</string>
+    <string name="translate_engine">Motor da tradução</string>
+    <string name="overlay_bg">Fundo do overlay</string>
+    <string name="youtube_title">YouTube gravado</string>
+    <string name="youtube_go">Baixar, transcrever e salvar SRT</string>
+    <string name="ata">Ata da daily</string>
+    <string name="copy">Copiar</string>
+    <string name="clear">Limpar</string>
+    <string name="ready">Pronto</string>
+    <string name="notif_title">Daily Overlay</string>
+    <string name="notif_text">Transcrevendo o microfone</string>
+    <string-array name="languages">
+        <item>Português (Brasil)</item>
+        <item>English</item>
+        <item>Español</item>
+    </string-array>
+    <string-array name="language_values">
+        <item>pt-BR</item>
+        <item>en-US</item>
+        <item>es-ES</item>
+    </string-array>
+    <string-array name="providers">
+        <item>OpenAI Whisper</item>
+        <item>Groq (whisper-large-v3)</item>
+    </string-array>
+    <string-array name="provider_values">
+        <item>openai</item>
+        <item>groq</item>
+    </string-array>
+    <string-array name="translate_engines">
+        <item>Grátis (MyMemory)</item>
+        <item>Paga (OpenAI/Groq)</item>
+    </string-array>
+    <string-array name="translate_engine_values">
+        <item>free</item>
+        <item>cloud</item>
+    </string-array>
+</resources>

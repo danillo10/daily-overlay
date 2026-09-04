@@ -97,7 +97,8 @@ label,
 .transcript-wrap,
 .grid,
 .toggles,
-.cloud {
+.cloud,
+.youtube {
   background: color-mix(in srgb, var(--bg-card) 88%, black);
   border: 1px solid var(--line);
   border-radius: 16px;
@@ -246,7 +247,36 @@ button {
   color: #ece7dc;
 }
 
-.cloud {
+.cloud,
+.youtube {
   display: grid;
   gap: 10px;
+}
+
+.openai-models {
+  display: grid;
+  gap: 10px;
+}
+
+.openai-models[hidden] {
+  display: none;
+}
+
+.youtube h2 {
+  margin: 0;
+}
+
+.youtube button {
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #2a3344;
+  color: var(--text);
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.youtube button:disabled {
+  opacity: 0.6;
+  cursor: wait;
 }

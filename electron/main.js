@@ -14,7 +14,14 @@ const {
 } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
+const dns = require("node:dns");
+try {
+  dns.setDefaultResultOrder("ipv4first");
+} catch {
+  /* older node */
+}
 const { LinuxSystemCapture, listPlaybackSources } = require("./linux-audio");
+const { runYoutubeJob } = require("./youtube-job");
 
 const isDev = process.env.VITE_DEV_SERVER === "1";
 const DEV_URL = "http://127.0.0.1:5173";
@@ -70,9 +77,9 @@ function saveSettings(next) {
 function createControlWindow() {
   controlWindow = new BrowserWindow({
     width: 420,
-    height: 720,
+    height: 820,
     minWidth: 380,
-    minHeight: 560,
+    minHeight: 620,
     backgroundColor: "#101114",
     title: "Daily Overlay",
     autoHideMenuBar: true,
@@ -398,7 +405,34 @@ function sourceLang(language) {
   const value = String(language || "en");
   if (value.startsWith("pt")) return "pt";
   if (value.startsWith("es")) return "es";
+  if (value.startsWith("fr")) return "fr";
+  if (value.startsWith("de")) return "de";
+  if (value.startsWith("it")) return "it";
+  if (value.startsWith("ja")) return "ja";
   return "en";
+}
+
+function targetName(language) {
+  const value = String(language || "pt-BR");
+  if (value.startsWith("pt")) return "português brasileiro";
+  if (value.startsWith("es")) return "espanhol";
+  if (value.startsWith("fr")) return "francês";
+  if (value.startsWith("de")) return "alemão";
+  if (value.startsWith("it")) return "italiano";
+  if (value.startsWith("ja")) return "japonês";
+  if (value.startsWith("en")) return "inglês";
+  return "português brasileiro";
+}
+
+function myMemoryTarget(language) {
+  const value = String(language || "pt-BR");
+  if (value.startsWith("pt")) return "pt-BR";
+  if (value.startsWith("es")) return "es";
+  if (value.startsWith("fr")) return "fr";
+  if (value.startsWith("de")) return "de";
+  if (value.startsWith("it")) return "it";
+  if (value.startsWith("ja")) return "ja";
+  return "en-US";
 }
 
 function cleanFreeTranslation(text) {
@@ -409,10 +443,9 @@ function cleanFreeTranslation(text) {
 }
 
 async function translateFree(source, language) {
-  const from = sourceLang(language);
-  if (from === "pt") return source;
-  const chunk = source.slice(0, 480);
-  const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(chunk)}&langpair=${from}|pt-BR`;
+  const to = myMemoryTarget(language);
+  const chunk = String(source || "").slice(0, 480);
+  const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(chunk)}&langpair=Autodetect|${to}`;
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`Tradução grátis falhou (${response.status}). Tenta de novo ou usa a opção paga.`);
@@ -423,6 +456,229 @@ async function translateFree(source, language) {
     throw new Error("Tradução grátis sem resultado. Se passar do limite do dia, usa a opção paga.");
   }
   return translated;
+}
+
+const STT_MODELS = new Set(["gpt-4o-mini-transcribe", "whisper-1", "gpt-4o-transcribe"]);
+const CHAT_MODELS = new Set(["gpt-4.1-nano", "gpt-4o-mini", "gpt-4.1-mini", "gpt-4o"]);
+const TTS_MODELS = new Set(["tts-1", "tts-1-hd", "gpt-4o-mini-tts"]);
+
+function pickModel(value, allowed, fallback) {
+  const id = String(value || "").trim();
+  return allowed.has(id) ? id : fallback;
+}
+
+async function translateCloud(source, { apiKey, provider, language, chatModel }) {
+  const useOpenAI = provider === "openai" || String(apiKey || "").startsWith("sk-");
+  const endpoint = useOpenAI
+    ? "https://api.openai.com/v1/chat/completions"
+    : "https://api.groq.com/openai/v1/chat/completions";
+  const chosen = useOpenAI ? pickModel(chatModel, CHAT_MODELS, "gpt-4.1-nano") : "llama-3.1-8b-instant";
+  const models = useOpenAI ? [chosen] : [chosen];
+  const dest = targetName(language);
+  const bodyFor = (model) =>
+    JSON.stringify({
+      model,
+      temperature: 0,
+      max_tokens: 180,
+      messages: [
+        {
+          role: "system",
+          content: `Traduza para ${dest}. O texto de origem pode estar em qualquer idioma. Responda só com a tradução, sem aspas e sem explicação.`,
+        },
+        { role: "user", content: source },
+      ],
+    });
+
+  let lastError = "";
+  for (const model of models) {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: bodyFor(model),
+    });
+    if (response.ok) {
+      const json = await response.json();
+      return String(json.choices?.[0]?.message?.content || "")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+    lastError = await response.text();
+    if (response.status !== 404) {
+      throw new Error(`Falha ao traduzir (${response.status}): ${lastError.slice(0, 180)}`);
+    }
+  }
+  throw new Error(`Falha ao traduzir: ${lastError.slice(0, 180)}`);
+}
+
+async function translateAny(source, { apiKey, provider, engine, language, chatModel }) {
+  const text = String(source || "").trim();
+  if (!text) return "";
+  if (engine !== "cloud") return translateFree(text, language);
+  return translateCloud(text, { apiKey, provider, language, chatModel });
+}
+
+let interpretKey = "";
+let interpretUnavailable = "";
+
+function modelUnavailable(status, body) {
+  if (status === 401 || status === 403) return false;
+  if (status === 404) return true;
+  return status === 400 && /does not exist|not have access|invalid model|unknown model/i.test(String(body));
+}
+
+function resetInterpretCache(apiKey, modelsKey) {
+  const key = `${apiKey}|${modelsKey || ""}`;
+  if (interpretKey === key) return;
+  interpretKey = key;
+  interpretUnavailable = "";
+}
+
+function looksLikeInterpreterChat(text) {
+  const t = String(text || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!t) return false;
+  if (/(me (diga|mande|envie|fala|fale)|o que (voce|vc) quer|como posso|estou (pronto|aqui)|pode (me )?(enviar|mandar)).{0,48}traduz/.test(t)) {
+    return true;
+  }
+  if (/(claro|ok|certo|oi|ola)[,!. ]{0,6}(me (diga|mande|envie)|pode (falar|mandar|enviar)|estou (pronto|aqui)|o que (voce|vc) quer)/.test(t)) {
+    return true;
+  }
+  return /how can i help|what (would you like|do you want) (me to )?translat|send me (the )?(text|audio)|tell me what (to|you)|i('d| would) be happy to translat|please (provide|send|paste)|ready when you are/.test(t);
+}
+
+function silentInterpret(model) {
+  return { text: "", base64: "", mime: "audio/mpeg", model };
+}
+
+async function transcribeOpenAI(wav, apiKey, sttModel) {
+  const model = pickModel(sttModel, STT_MODELS, "gpt-4o-mini-transcribe");
+  const file = new Blob([wav], { type: "audio/wav" });
+  const body = new FormData();
+  body.append("file", file, "chunk.wav");
+  body.append("model", model);
+  body.append("response_format", "json");
+  const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}` },
+    body,
+  });
+  const detail = await response.text();
+  if (response.ok) {
+    const json = JSON.parse(detail);
+    return String(json.text || "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+  if (response.status === 401 || response.status === 403) {
+    interpretUnavailable = "Key OpenAI inválida ou sem permissão. GPT não está funcionando.";
+    throw new Error(interpretUnavailable);
+  }
+  if (modelUnavailable(response.status, detail)) {
+    throw new Error(`O modelo ${model} não está liberado nesta key. Escolhe outro.`);
+  }
+  throw new Error(`GPT transcrição falhou (${response.status}): ${detail.slice(0, 180)}`);
+}
+
+async function translateMeetingLine(source, { apiKey, language, chatModel }) {
+  const dest = targetName(language);
+  const model = pickModel(chatModel, CHAT_MODELS, "gpt-4.1-nano");
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0,
+      max_tokens: 180,
+      messages: [
+        {
+          role: "system",
+          content: [
+            `You are a television dubbing translator, not an assistant.`,
+            `The user message is a line spoken on a live broadcast or meeting.`,
+            `Write only the dubbed line in ${dest}.`,
+            `Do not answer the speaker. Do not greet. Do not ask questions. Do not offer help. Do not comment.`,
+            `If there is nothing to translate, output nothing.`,
+          ].join(" "),
+        },
+        { role: "user", content: source },
+      ],
+    }),
+  });
+  if (response.ok) {
+    const json = await response.json();
+    return String(json.choices?.[0]?.message?.content || "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+  const lastError = await response.text();
+  if (modelUnavailable(response.status, lastError)) {
+    throw new Error(`O modelo ${model} não está liberado nesta key. Escolhe outro.`);
+  }
+  throw new Error(`GPT tradução falhou (${response.status}): ${lastError.slice(0, 180)}`);
+}
+
+function ttsVoice(model) {
+  return model === "gpt-4o-mini-tts" ? "coral" : "nova";
+}
+
+async function speakOpenAI(text, apiKey, ttsModel) {
+  const model = pickModel(ttsModel, TTS_MODELS, "tts-1");
+  const response = await fetch("https://api.openai.com/v1/audio/speech", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      voice: ttsVoice(model),
+      input: text.slice(0, 700),
+      response_format: "mp3",
+    }),
+  });
+  if (response.ok) {
+    const buffer = Buffer.from(await response.arrayBuffer());
+    return buffer.toString("base64");
+  }
+  const lastDetail = await response.text();
+  if (modelUnavailable(response.status, lastDetail)) {
+    throw new Error(`O modelo ${model} não está liberado nesta key. Escolhe outro.`);
+  }
+  throw new Error(`GPT voz falhou (${response.status}): ${lastDetail.slice(0, 180)}`);
+}
+
+async function interpretSpeech(buffer, { apiKey, language, sttModel, chatModel, ttsModel }) {
+  resetInterpretCache(apiKey, `${sttModel}|${chatModel}|${ttsModel}`);
+  if (interpretUnavailable) throw new Error(interpretUnavailable);
+
+  const wav = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+  const source = await transcribeOpenAI(wav, apiKey, sttModel);
+  if (!source || looksLikeInterpreterChat(source)) {
+    return silentInterpret("openai-interpret");
+  }
+
+  const translated = await translateMeetingLine(source, { apiKey, language, chatModel });
+  if (!translated || looksLikeInterpreterChat(translated)) {
+    return silentInterpret("openai-interpret");
+  }
+
+  const base64 = await speakOpenAI(translated, apiKey, ttsModel);
+  return {
+    text: translated,
+    base64,
+    mime: "audio/mpeg",
+    model: "openai-interpret",
+  };
 }
 
 function registerIpc() {
@@ -557,25 +813,88 @@ function registerIpc() {
     return true;
   });
 
+  ipcMain.handle("linux-audio:duck", (_event, volume) => {
+    linuxCapture.setDuckVolume(volume == null ? null : Number(volume));
+    return true;
+  });
+
+  ipcMain.handle("speak:text", async (_event, payload) => {
+    const text = String(payload?.text || "").trim();
+    const apiKey = String(payload?.apiKey || "").trim();
+    if (!text) return { browser: true };
+    const useOpenAI = apiKey.startsWith("sk-") || payload?.provider === "openai";
+    if (!useOpenAI || !apiKey) return { browser: true, language: payload?.language || "pt-BR" };
+    const model = pickModel(payload?.ttsModel, TTS_MODELS, "tts-1");
+    const body = {
+      model,
+      voice: payload?.voice || ttsVoice(model),
+      input: text.slice(0, 700),
+      response_format: "mp3",
+    };
+    if (model === "tts-1" || model === "tts-1-hd") {
+      body.speed = Math.max(0.85, Math.min(1.5, Number(payload?.speed) || 1));
+    }
+    const response = await fetch("https://api.openai.com/v1/audio/speech", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`Falha na voz da IA (${response.status}): ${detail.slice(0, 160)}`);
+    }
+    const buffer = Buffer.from(await response.arrayBuffer());
+    return {
+      mime: "audio/mpeg",
+      base64: buffer.toString("base64"),
+      language: payload?.language || "pt-BR",
+    };
+  });
+
+  ipcMain.handle("interpret:audio", async (_event, payload) => {
+    const apiKey = String(payload?.apiKey || "").trim();
+    if (!apiKey) throw new Error("API key da OpenAI necessária para o intérprete.");
+    return interpretSpeech(payload?.buffer, {
+      apiKey,
+      language: payload?.language || "pt-BR",
+      sttModel: payload?.sttModel,
+      chatModel: payload?.chatModel,
+      ttsModel: payload?.ttsModel,
+    });
+  });
+
   ipcMain.handle("transcribe:cloud", async (_event, payload) => {
-    const { buffer, mime, apiKey, provider, language } = payload;
+    const { buffer, mime, apiKey, provider, language, sttModel } = payload;
     const endpoint =
       provider === "openai"
         ? "https://api.openai.com/v1/audio/transcriptions"
         : "https://api.groq.com/openai/v1/audio/transcriptions";
-    const model = provider === "openai" ? "whisper-1" : "whisper-large-v3";
+    const model =
+      provider === "openai" ? pickModel(sttModel, STT_MODELS, "gpt-4o-mini-transcribe") : "whisper-large-v3";
+    const detect = payload.detectLanguage === true || language == null || language === "auto";
     const lang = String(language || "pt-BR").startsWith("pt")
       ? "pt"
       : String(language).startsWith("es")
         ? "es"
-        : "en";
+        : String(language).startsWith("fr")
+          ? "fr"
+          : String(language).startsWith("de")
+            ? "de"
+            : String(language).startsWith("it")
+              ? "it"
+              : String(language).startsWith("ja")
+                ? "ja"
+                : "en";
 
     const fileName = (mime || "").includes("wav") ? "chunk.wav" : "chunk.webm";
     const file = new Blob([buffer], { type: mime || "audio/webm" });
     const body = new FormData();
     body.append("file", file, fileName);
     body.append("model", model);
-    body.append("language", lang);
+    if (!detect) body.append("language", lang);
     body.append("response_format", "json");
 
     const response = await fetch(endpoint, {
@@ -594,54 +913,44 @@ function registerIpc() {
   });
 
   ipcMain.handle("translate:text", async (_event, payload) => {
-    const { text, apiKey, provider, engine, language } = payload;
-    const source = String(text || "").trim();
-    if (!source) return "";
-    if (engine !== "cloud") {
-      return translateFree(source, language);
-    }
-    const useOpenAI = provider === "openai" || String(apiKey || "").startsWith("sk-");
-    const endpoint = useOpenAI
-      ? "https://api.openai.com/v1/chat/completions"
-      : "https://api.groq.com/openai/v1/chat/completions";
-    const models = useOpenAI ? ["gpt-4.1-nano", "gpt-4o-mini"] : ["llama-3.1-8b-instant"];
-    const bodyFor = (model) =>
-      JSON.stringify({
-        model,
-        temperature: 0,
-        max_tokens: 180,
-        messages: [
-          {
-            role: "system",
-            content:
-              "Traduza para português brasileiro. Responda só com a tradução, sem aspas e sem explicação.",
-          },
-          { role: "user", content: source },
-        ],
-      });
+    const { text, apiKey, provider, engine, language, chatModel } = payload;
+    return translateAny(text, { apiKey, provider, engine, language, chatModel });
+  });
 
-    let lastError = "";
-    for (const model of models) {
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: bodyFor(model),
-      });
-      if (response.ok) {
-        const json = await response.json();
-        return String(json.choices?.[0]?.message?.content || "")
-          .replace(/\s+/g, " ")
-          .trim();
+  ipcMain.handle("youtube:caption", async (event, payload) => {
+    const { url, language, apiKey, provider, translateEngine, sttModel, chatModel, ttsModel, dubVoice } = payload || {};
+    const sendProgress = (message) => {
+      if (!event.sender.isDestroyed()) {
+        event.sender.send("youtube:progress", { message });
       }
-      lastError = await response.text();
-      if (response.status !== 404) {
-        throw new Error(`Falha ao traduzir (${response.status}): ${lastError.slice(0, 180)}`);
-      }
-    }
-    throw new Error(`Falha ao traduzir: ${lastError.slice(0, 180)}`);
+    };
+    const result = await runYoutubeJob({
+      url,
+      language,
+      apiKey,
+      provider,
+      translateEngine,
+      sttModel,
+      dubVoice: dubVoice !== false,
+      translateText: (text) =>
+        translateAny(text, {
+          apiKey,
+          provider,
+          engine: translateEngine || "free",
+          language,
+          chatModel,
+        }),
+      speakText:
+        dubVoice !== false && (provider === "openai" || String(apiKey || "").startsWith("sk-"))
+          ? async (text) => {
+              const base64 = await speakOpenAI(text, apiKey, ttsModel);
+              return { mime: "audio/mpeg", base64 };
+            }
+          : null,
+      onProgress: sendProgress,
+    });
+    if (result.folder) shell.openPath(result.folder);
+    return result;
   });
 
   ipcMain.handle("desktop:sources", async () => {

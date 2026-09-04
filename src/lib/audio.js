@@ -61,7 +61,10 @@ function downsample(buffer, inputRate, outputRate = 16000) {
   return result;
 }
 
-export function createPcmCollector(stream, { intervalMs = 2800, overlapMs = 400, onChunk, onLevel }) {
+export function createPcmCollector(
+  stream,
+  { intervalMs = 2800, overlapMs = 400, emitSilence = false, onChunk, onLevel },
+) {
   const audioContext = new AudioContext();
   if (audioContext.state === "suspended") void audioContext.resume();
   const source = audioContext.createMediaStreamSource(stream);
@@ -88,7 +91,7 @@ export function createPcmCollector(stream, { intervalMs = 2800, overlapMs = 400,
       const chunk = downsample(merged, inputRate, 16000);
       const level = Math.sqrt(chunk.reduce((sum, value) => sum + value * value, 0) / chunk.length);
       if (typeof onLevel === "function") onLevel(level);
-      if (level > 0.004) onChunk(chunk);
+      if (emitSilence || level > 0.004) onChunk(chunk);
 
       const keepFrom = Math.max(0, merged.length - overlapSamples);
       const overlap = merged.slice(keepFrom);

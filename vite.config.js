@@ -12,6 +12,7 @@ export default defineConfig({
         control: resolve(__dirname, "src/control/index.html"),
         overlay: resolve(__dirname, "src/overlay/index.html"),
         translate: resolve(__dirname, "src/translate/index.html"),
+        web: resolve(__dirname, "src/web/index.html"),
       },
     },
   },

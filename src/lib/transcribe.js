@@ -2,6 +2,10 @@ const WHISPER_LANG = {
   "pt-BR": "portuguese",
   "en-US": "english",
   "es-ES": "spanish",
+  "fr-FR": "french",
+  "de-DE": "german",
+  "it-IT": "italian",
+  "ja-JP": "japanese",
 };
 
 let transcriberPromise = null;
@@ -45,18 +49,21 @@ export async function loadWhisper(onProgress) {
 
 export async function transcribeLocal(float32, language, onProgress) {
   const transcriber = await loadWhisper(onProgress);
-  const result = await transcriber(float32, {
-    language: WHISPER_LANG[language] || null,
+  const options = {
     task: "transcribe",
     condition_on_previous_text: false,
     no_speech_threshold: 0.4,
-  });
+  };
+  if (language && language !== "auto") {
+    options.language = WHISPER_LANG[language] || null;
+  }
+  const result = await transcriber(float32, options);
   return String(result?.text || "")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-export async function transcribeCloud(blob, { apiKey, provider, language }) {
+export async function transcribeCloud(blob, { apiKey, provider, language, detectLanguage, sttModel }) {
   const buffer = await blob.arrayBuffer();
   return window.daily.transcribeCloud({
     buffer,
@@ -64,6 +71,8 @@ export async function transcribeCloud(blob, { apiKey, provider, language }) {
     apiKey,
     provider,
     language,
+    detectLanguage,
+    sttModel,
   });
 }
 

@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Reuniões multilíngues onde cada pessoa escuta no próprio idioma." />
+    <meta name="theme-color" content="#07111f" />
+    <title>PolyCall — Reuniões sem barreiras</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="background" aria-hidden="true"></div>
+
+    <main id="lobby" class="lobby">
+      <nav class="nav shell">
+        <a class="brand" href="/" aria-label="PolyCall">
+          <span class="brand-mark">
+            <i></i><i></i><i></i>
+          </span>
+          <span>PolyCall</span>
+        </a>
+        <span class="secure-pill">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10V7a5 5 0 0 1 10 0v3m-9 0h8a2 2 0 0 1 2 2v7H6v-7a2 2 0 0 1 2-2Z"/></svg>
+          Conexão segura
+        </span>
+      </nav>
+
+      <section class="hero shell">
+        <div class="hero-copy">
+          <span class="eyebrow"><i></i> Tradução de voz em tempo real</span>
+          <h1>Sua equipe global,<br /><em>na mesma conversa.</em></h1>
+          <p>Crie uma sala, convide sua equipe e fale naturalmente. Cada participante acompanha a reunião no idioma que preferir.</p>
+
+          <div class="trust-row">
+            <div class="avatar-stack" aria-hidden="true">
+              <span>AM</span><span>JK</span><span>LS</span><span>+8</span>
+            </div>
+            <p><strong>Feito para equipes distribuídas</strong><br />Reuniões, dailies e calls com clientes</p>
+          </div>
+        </div>
+
+        <section class="join-card" aria-labelledby="join-title">
+          <div class="card-heading">
+            <span class="card-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 10l4.5-2.5v9L15 14m-9 4h8a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2Z"/></svg>
+            </span>
+            <div>
+              <h2 id="join-title">Comece uma reunião</h2>
+              <p>Sem cadastro. Entre em poucos segundos.</p>
+            </div>
+          </div>
+
+          <form id="joinForm">
+            <label for="displayName">Seu nome</label>
+            <div class="field">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm7 8a7 7 0 0 0-14 0"/></svg>
+              <input id="displayName" maxlength="40" placeholder="Como devemos chamar você?" autocomplete="name" required />
+            </div>
+
+            <label for="language">Quero ouvir em</label>
+            <div class="field">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
+              <select id="language">
+                <option value="pt-BR">Português (Brasil)</option>
+                <option value="en-US">English (US)</option>
+                <option value="es-ES">Español</option>
+                <option value="fr-FR">Français</option>
+                <option value="de-DE">Deutsch</option>
+                <option value="it-IT">Italiano</option>
+                <option value="ja-JP">日本語</option>
+              </select>
+            </div>
+
+            <label for="apiKey">Sua chave OpenAI</label>
+            <div class="field">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="m11 12 8-8m-3 3 2 2m-5 1 2 2"/></svg>
+              <input id="apiKey" type="password" maxlength="220" placeholder="sk-..." autocomplete="off" required />
+            </div>
+            <p class="key-note">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10V7a5 5 0 0 1 10 0v3m-9 0h8a2 2 0 0 1 2 2v7H6v-7a2 2 0 0 1 2-2Z"/></svg>
+              Usada somente durante esta sessão. Cada participante paga apenas o próprio uso.
+            </p>
+
+            <div id="roomFieldWrap" class="room-field-wrap">
+              <label for="roomCode">Código da sala</label>
+              <div class="field">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5 7 19m10-14-2 14M4 9h16M3 15h16"/></svg>
+                <input id="roomCode" maxlength="8" placeholder="Ex: TEAM42" autocomplete="off" />
+              </div>
+            </div>
+
+            <p id="formError" class="form-error" role="alert"></p>
+            <button id="primaryAction" class="primary-action" type="submit">
+              <span>Criar nova sala</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+            </button>
+            <button id="switchMode" class="switch-mode" type="button">Já tenho um código de sala</button>
+          </form>
+
+          <div class="card-footer">
+            <span><i class="status-dot"></i> Áudio em tempo real</span>
+            <span>Criptografia WebRTC</span>
+          </div>
+        </section>
+      </section>
+
+      <section class="benefits shell" aria-label="Benefícios">
+        <article>
+          <span><svg viewBox="0 0 24 24"><path d="M4 13h4l2-7 4 12 2-5h4"/></svg></span>
+          <div><h3>Conversa natural</h3><p>Tradução contínua com baixa latência.</p></div>
+        </article>
+        <article>
+          <span><svg viewBox="0 0 24 24"><path d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0-18c3 3 3 15 0 18m0-18c-3 3-3 15 0 18M3 12h18"/></svg></span>
+          <div><h3>7 idiomas</h3><p>Cada pessoa escolhe como quer ouvir.</p></div>
+        </article>
+        <article>
+          <span><svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 5 3 8 7 10 4-2 7-5 7-10V6l-7-3Zm-3 9 2 2 4-5"/></svg></span>
+          <div><h3>Pronto para empresas</h3><p>Salas privadas e acesso por convite.</p></div>
+        </article>
+      </section>
+    </main>
+
+    <main id="meeting" class="meeting hidden">
+      <header class="meeting-header">
+        <a class="brand compact" href="/" aria-label="PolyCall"><span class="brand-mark"><i></i><i></i><i></i></span><span>PolyCall</span></a>
+        <div class="meeting-title">
+          <strong id="meetingName">Reunião da equipe</strong>
+          <span><i class="status-dot"></i><span id="meetingTimer">00:00</span> · <span id="participantCount">1 participante</span></span>
+        </div>
+        <div class="header-actions">
+          <button id="copyInvite" class="invite-button" type="button">
+            <svg viewBox="0 0 24 24"><path d="M9 12h6m-3-3v6M12 3a5 5 0 0 0-5 5v2H5a2 2 0 0 0-2 2v7h18v-7a2 2 0 0 0-2-2h-2V8a5 5 0 0 0-5-5Z"/></svg>
+            Convidar
+          </button>
+          <span class="room-badge">Sala <strong id="roomBadge"></strong></span>
+        </div>
+      </header>
+
+      <div class="meeting-body">
+        <section class="stage">
+          <div id="videoGrid" class="video-grid">
+            <article id="localTile" class="video-tile local-tile">
+              <video id="localVideo" autoplay muted playsinline></video>
+              <div class="camera-placeholder">
+                <span id="localInitials">EU</span>
+                <p>Câmera desativada</p>
+              </div>
+              <div class="tile-info"><span id="localName">Você</span><small>Você</small></div>
+              <div class="tile-status"><span id="localLanguage">PT</span><i class="mic-indicator"></i></div>
+            </article>
+          </div>
+
+          <div id="liveCaption" class="live-caption hidden" aria-live="polite">
+            <div><strong id="captionSpeaker"></strong><span id="captionLanguage"></span></div>
+            <p id="captionText"></p>
+          </div>
+        </section>
+
+        <aside class="sidebar">
+          <div class="sidebar-tabs">
+            <button class="active" type="button">Participantes <span id="sidebarCount">1</span></button>
+            <button type="button" disabled>Transcrição</button>
+          </div>
+          <div id="participantList" class="participant-list"></div>
+          <div class="language-panel">
+            <label for="meetingLanguage">Seu idioma de áudio</label>
+            <select id="meetingLanguage">
+              <option value="pt-BR">🇧🇷 Português</option>
+              <option value="en-US">🇺🇸 English</option>
+              <option value="es-ES">🇪🇸 Español</option>
+              <option value="fr-FR">🇫🇷 Français</option>
+              <option value="de-DE">🇩🇪 Deutsch</option>
+              <option value="it-IT">🇮🇹 Italiano</option>
+              <option value="ja-JP">🇯🇵 日本語</option>
+            </select>
+            <label class="voice-toggle">
+              <span><strong>Ouvir tradução</strong><small>Voz sintetizada no seu idioma</small></span>
+              <input id="voiceEnabled" type="checkbox" checked />
+              <i></i>
+            </label>
+          </div>
+          <p id="translationStatus" class="translation-status"></p>
+        </aside>
+      </div>
+
+      <footer class="meeting-controls">
+        <div class="device-note"><span class="quality-bars"><i></i><i></i><i></i></span><span id="connectionLabel">Conectando...</span></div>
+        <div class="main-controls">
+          <button id="toggleMic" class="control-button" type="button" aria-label="Desativar microfone">
+            <svg class="on-icon" viewBox="0 0 24 24"><path d="M12 15a4 4 0 0 0 4-4V7a4 4 0 0 0-8 0v4a4 4 0 0 0 4 4Zm-7-4a7 7 0 0 0 14 0M12 18v3m-4 0h8"/></svg>
+            <svg class="off-icon" viewBox="0 0 24 24"><path d="m3 3 18 18M9 9v2a3 3 0 0 0 5 2m2-2V7a4 4 0 0 0-7-2M5 11a7 7 0 0 0 11 6M12 18v3m-4 0h8"/></svg>
+          </button>
+          <button id="toggleCamera" class="control-button" type="button" aria-label="Desativar câmera">
+            <svg class="on-icon" viewBox="0 0 24 24"><path d="M15 10l5-3v10l-5-3M5 18h8a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2Z"/></svg>
+            <svg class="off-icon" viewBox="0 0 24 24"><path d="m3 3 18 18M15 10l5-3v10l-3-2M5 6h8a2 2 0 0 1 2 2v4M5 6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2"/></svg>
+          </button>
+          <button id="leaveMeeting" class="leave-button" type="button">
+            <svg viewBox="0 0 24 24"><path d="M5 15c4-2 10-2 14 0l-2 4-3-1v-3h-4v3l-3 1-2-4Z"/></svg>
+            Encerrar
+          </button>
+        </div>
+        <div class="headphone-note">Use fones para melhor qualidade</div>
+      </footer>
+    </main>
+
+    <div id="toast" class="toast" role="status"></div>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

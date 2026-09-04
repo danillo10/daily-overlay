@@ -16,11 +16,20 @@ contextBridge.exposeInMainWorld("daily", {
   writeClipboard: (text) => ipcRenderer.invoke("clipboard:write", text),
   listSources: () => ipcRenderer.invoke("desktop:sources"),
   transcribeCloud: (payload) => ipcRenderer.invoke("transcribe:cloud", payload),
+  interpretAudio: (payload) => ipcRenderer.invoke("interpret:audio", payload),
   translateText: (payload) => ipcRenderer.invoke("translate:text", payload),
+  youtubeCaption: (payload) => ipcRenderer.invoke("youtube:caption", payload),
+  onYoutubeProgress: (handler) => {
+    const listener = (_event, payload) => handler(payload);
+    ipcRenderer.on("youtube:progress", listener);
+    return () => ipcRenderer.removeListener("youtube:progress", listener);
+  },
   linuxAudioAvailable: () => ipcRenderer.invoke("linux-audio:available"),
   listLinuxAudioSources: () => ipcRenderer.invoke("linux-audio:sources"),
   startLinuxAudio: (sourceId) => ipcRenderer.invoke("linux-audio:start", sourceId),
   stopLinuxAudio: () => ipcRenderer.invoke("linux-audio:stop"),
+  setSourceDuck: (volume) => ipcRenderer.invoke("linux-audio:duck", volume),
+  speakText: (payload) => ipcRenderer.invoke("speak:text", payload),
   onLinuxAudioChunk: (handler) => {
     const listener = (_event, payload) => handler(payload);
     ipcRenderer.on("linux-audio:chunk", listener);
