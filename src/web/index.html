@@ -209,6 +209,14 @@
               <input id="voiceEnabled" type="checkbox" checked />
               <i></i>
             </label>
+            <div class="volume-control">
+              <label for="originalVolume"><span>Voz original</span><output id="originalVolumeValue">12%</output></label>
+              <input id="originalVolume" type="range" min="0" max="100" value="12" />
+            </div>
+            <div class="volume-control">
+              <label for="translatedVolume"><span>Voz traduzida</span><output id="translatedVolumeValue">100%</output></label>
+              <input id="translatedVolume" type="range" min="0" max="100" value="100" />
+            </div>
           </div>
           <p id="translationStatus" class="translation-status"></p>
         </aside>

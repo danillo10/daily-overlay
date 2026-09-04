@@ -30,14 +30,19 @@ const state = {
   micEnabled: true,
   cameraEnabled: true,
   voiceEnabled: true,
+  originalVolume: Number(sessionStorage.getItem("polycall_original_volume") || 12) / 100,
+  translatedVolume: Number(sessionStorage.getItem("polycall_translated_volume") || 100) / 100,
   captionTimer: null,
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }, { urls: "stun:stun1.l.google.com:19302" }],
   apiKey: sessionStorage.getItem("polycall_openai_key") || "",
   apiOrigin: API_ORIGIN,
   transcriptionTimer: null,
   transcriptionGeneration: 0,
+  transcriptionBusy: 0,
+  lastTranscript: "",
   ttsQueue: [],
   ttsPlaying: false,
+  ttsAudio: null,
   ai: null,
   aiHistory: [],
   aiBuffer: [],
@@ -71,6 +76,10 @@ const ui = {
   meetingName: $("meetingName"),
   meetingLanguage: $("meetingLanguage"),
   voiceEnabled: $("voiceEnabled"),
+  originalVolume: $("originalVolume"),
+  originalVolumeValue: $("originalVolumeValue"),
+  translatedVolume: $("translatedVolume"),
+  translatedVolumeValue: $("translatedVolumeValue"),
   translationStatus: $("translationStatus"),
   connectionLabel: $("connectionLabel"),
   copyInvite: $("copyInvite"),
@@ -358,7 +367,9 @@ function setupMeetingUi() {
   ui.connectionLabel.textContent = "Conexão estável";
   ui.toggleCamera.classList.toggle("off", !state.cameraEnabled);
   ui.toggleMic.classList.toggle("off", !state.micEnabled);
-  ui.translationStatus.textContent = "Sua chave paga somente sua transcrição, traduções e voz. Ela não é armazenada no servidor.";
+  ui.translationStatus.textContent = "Abaixe a voz original e deixe a tradução em destaque, como no overlay Electron.";
+  syncVolumeUi();
+  applyRemoteVolumes();
   state.timer = setInterval(updateTimer, 1000);
   renderAiState();
   updateTimer();
@@ -451,7 +462,7 @@ function scheduleAiResponse(source) {
   state.aiBuffer.push(`${source.speakerName}: ${source.text}`);
   state.aiBuffer = state.aiBuffer.slice(-4);
   clearTimeout(state.aiTimer);
-  state.aiTimer = setTimeout(requestAiResponse, 1100);
+  state.aiTimer = setTimeout(requestAiResponse, 450);
 }
 
 async function requestAiResponse() {
@@ -503,7 +514,9 @@ function startRecognition() {
   state.recognitionActive = false;
   state.transcriptionGeneration += 1;
   clearTimeout(state.transcriptionTimer);
-  if (state.recognition?.state === "recording") state.recognition.stop();
+  if (state.recognition?.state === "recording") {
+    try { state.recognition.stop(); } catch { /* already stopped */ }
+  }
 
   const audioTrack = state.stream.getAudioTracks()[0];
   if (!audioTrack || !window.MediaRecorder) {
@@ -524,23 +537,35 @@ function startRecognition() {
     recorder.ondataavailable = (event) => {
       if (event.data.size) chunks.push(event.data);
     };
-    recorder.onstop = async () => {
+    recorder.onstop = () => {
       if (chunks.length && generation === state.transcriptionGeneration) {
-        await transcribeChunk(new Blob(chunks, { type: recorder.mimeType || "audio/webm" }));
+        // Fire-and-forget keeps listening continuous while OpenAI processes prior chunks.
+        void transcribeChunk(new Blob(chunks, { type: recorder.mimeType || "audio/webm" }));
       }
       if (state.recognitionActive && state.micEnabled && generation === state.transcriptionGeneration) {
-        state.transcriptionTimer = setTimeout(recordChunk, 40);
+        state.transcriptionTimer = setTimeout(recordChunk, 20);
       }
     };
     recorder.start();
     state.transcriptionTimer = setTimeout(() => {
       if (recorder.state === "recording") recorder.stop();
-    }, 4200);
+    }, 1800);
   };
   recordChunk();
 }
 
+function similarTranscript(a, b) {
+  const x = String(a || "").toLowerCase().replace(/\s+/g, " ").trim();
+  const y = String(b || "").toLowerCase().replace(/\s+/g, " ").trim();
+  if (!x || !y) return false;
+  if (x === y) return true;
+  return Math.abs(x.length - y.length) < 10 && (x.includes(y) || y.includes(x));
+}
+
 async function transcribeChunk(blob) {
+  if (blob.size < 1200) return;
+  if (state.transcriptionBusy >= 2) return;
+  state.transcriptionBusy += 1;
   const form = new FormData();
   form.append("audio", blob, "speech.webm");
   form.append("language", state.language);
@@ -552,10 +577,16 @@ async function transcribeChunk(blob) {
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Falha na transcrição.");
-    if (payload.text) state.socket.emit("transcript", { text: payload.text, language: state.language });
-    ui.translationStatus.textContent = "Interpretação ativa · gpt-4o-mini-transcribe + gpt-4.1-nano + tts-1";
+    const text = String(payload.text || "").trim();
+    if (text && !similarTranscript(text, state.lastTranscript)) {
+      state.lastTranscript = text;
+      state.socket.emit("transcript", { text, language: state.language });
+    }
+    ui.translationStatus.textContent = "Ao vivo · original abaixado · tradução em destaque";
   } catch (error) {
     ui.translationStatus.textContent = error.message;
+  } finally {
+    state.transcriptionBusy = Math.max(0, state.transcriptionBusy - 1);
   }
 }
 
@@ -604,13 +635,25 @@ function handleCaption(caption) {
 }
 
 function queueSpeech(text, language) {
-  state.ttsQueue.push({ text, language });
+  if (!text?.trim()) return;
+  // Keep only the newest phrase so the meeting stays near live instead of stacking delay.
+  state.ttsQueue = [{ text, language }];
+  if (state.ttsPlaying && state.ttsAudio) {
+    try {
+      state.ttsAudio.pause();
+      state.ttsAudio.src = "";
+    } catch { /* ignore */ }
+    state.ttsAudio = null;
+    state.ttsPlaying = false;
+    applyRemoteVolumes();
+  }
   playSpeechQueue();
 }
 
 async function playSpeechQueue() {
   if (state.ttsPlaying || !state.ttsQueue.length || !state.voiceEnabled) return;
   state.ttsPlaying = true;
+  applyRemoteVolumes();
   const item = state.ttsQueue.shift();
   try {
     const response = await fetch(`${state.apiOrigin}/api/openai/speech`, {
@@ -623,7 +666,13 @@ async function playSpeechQueue() {
       throw new Error(payload.error || "Falha ao gerar voz.");
     }
     const url = URL.createObjectURL(await response.blob());
+    if (state.ttsAudio) {
+      state.ttsAudio.pause();
+      state.ttsAudio.src = "";
+    }
     const audio = new Audio(url);
+    state.ttsAudio = audio;
+    audio.volume = Math.max(0, Math.min(1, state.translatedVolume));
     await new Promise((resolve) => {
       audio.onended = resolve;
       audio.onerror = resolve;
@@ -634,17 +683,40 @@ async function playSpeechQueue() {
     ui.translationStatus.textContent = error.message;
   } finally {
     state.ttsPlaying = false;
+    state.ttsAudio = null;
+    applyRemoteVolumes();
     playSpeechQueue();
   }
 }
 
+function duckLevel() {
+  if (!state.voiceEnabled) return 1;
+  const level = Math.max(0, Math.min(1, state.originalVolume));
+  return state.ttsPlaying ? Math.min(level, 0.08) : level;
+}
+
 function applyRemoteVolumes() {
+  const volume = duckLevel();
   for (const participant of state.participants) {
     if (participant.id === state.socket?.id) continue;
     const video = document.querySelector(`[data-peer="${participant.id}"] video`);
     if (!video) continue;
-    video.volume = state.voiceEnabled && participant.language !== state.language ? 0.14 : 1;
+    if (!state.voiceEnabled) {
+      video.volume = 1;
+      continue;
+    }
+    // Same language keeps the live voice; other languages are ducked so translated TTS leads.
+    video.volume = participant.language === state.language && !state.ttsPlaying ? 1 : volume;
   }
+  if (state.ttsAudio) state.ttsAudio.volume = Math.max(0, Math.min(1, state.translatedVolume));
+}
+
+function syncVolumeUi() {
+  if (!ui.originalVolume || !ui.translatedVolume) return;
+  ui.originalVolume.value = String(Math.round(state.originalVolume * 100));
+  ui.translatedVolume.value = String(Math.round(state.translatedVolume * 100));
+  ui.originalVolumeValue.textContent = `${ui.originalVolume.value}%`;
+  ui.translatedVolumeValue.textContent = `${ui.translatedVolume.value}%`;
 }
 
 ui.copyInvite.addEventListener("click", async () => {
@@ -666,8 +738,26 @@ ui.voiceEnabled.addEventListener("change", () => {
   state.voiceEnabled = ui.voiceEnabled.checked;
   if (!state.voiceEnabled) {
     state.ttsQueue = [];
+    if (state.ttsAudio) {
+      state.ttsAudio.pause();
+      state.ttsAudio = null;
+    }
     window.speechSynthesis?.cancel();
   }
+  applyRemoteVolumes();
+});
+
+ui.originalVolume?.addEventListener("input", () => {
+  state.originalVolume = Number(ui.originalVolume.value) / 100;
+  sessionStorage.setItem("polycall_original_volume", ui.originalVolume.value);
+  ui.originalVolumeValue.textContent = `${ui.originalVolume.value}%`;
+  applyRemoteVolumes();
+});
+
+ui.translatedVolume?.addEventListener("input", () => {
+  state.translatedVolume = Number(ui.translatedVolume.value) / 100;
+  sessionStorage.setItem("polycall_translated_volume", ui.translatedVolume.value);
+  ui.translatedVolumeValue.textContent = `${ui.translatedVolume.value}%`;
   applyRemoteVolumes();
 });
 
