@@ -109,6 +109,7 @@ const ui = {
   sttModel: $("sttModel"),
   chatModel: $("chatModel"),
   ttsModel: $("ttsModel"),
+  chatVoiceEnabled: $("chatVoiceEnabled"),
   liveCaption: $("liveCaption"),
   captionSpeaker: $("captionSpeaker"),
   captionLanguage: $("captionLanguage"),
@@ -126,6 +127,8 @@ ui.apiKey.value = state.apiKey;
 if (ui.sttModel) ui.sttModel.value = state.sttModel;
 if (ui.chatModel) ui.chatModel.value = state.chatModel;
 if (ui.ttsModel) ui.ttsModel.value = state.ttsModel;
+if (ui.voiceEnabled) ui.voiceEnabled.checked = state.voiceEnabled;
+if (ui.chatVoiceEnabled) ui.chatVoiceEnabled.checked = state.voiceEnabled;
 let joinMode = new URLSearchParams(location.search).has("room");
 const roomFromUrl = new URLSearchParams(location.search).get("room");
 if (roomFromUrl) ui.roomCode.value = normalizeRoomId(roomFromUrl);
@@ -492,9 +495,13 @@ function renderAiState() {
     : "<span>✦</span> Adicionar IA";
   ui.aiHint.textContent = active
     ? isOwner
-      ? "A IA está ouvindo e responderá após cada fala."
+      ? "A IA responde após sua pausa de 2s e deve falar em voz alta."
       : `${state.ai.ownerName} adicionou a IA à conversa.`
     : "A IA responderá depois que você falar.";
+  if (active && isOwner && !state.voiceEnabled) {
+    setVoiceEnabled(true);
+    showToast("Voz da tradução/IA ligada automaticamente");
+  }
 
   let tile = document.querySelector(".ai-tile");
   if (!active) {
@@ -762,18 +769,29 @@ async function processSourceCaption(source) {
 
 function handleCaption(caption) {
   ui.captionSpeaker.textContent = caption.speakerName;
-  ui.captionLanguage.textContent = caption.translated ? `Traduzido para ${LANGUAGE_LABELS[caption.targetLanguage]?.name}` : "Idioma original";
+  ui.captionLanguage.textContent = caption.isAi
+    ? "Poly AI"
+    : caption.translated
+      ? `Traduzido para ${LANGUAGE_LABELS[caption.targetLanguage]?.name}`
+      : "Idioma original";
   ui.captionText.textContent = caption.text;
   ui.liveCaption.classList.remove("hidden");
   clearTimeout(state.captionTimer);
   state.captionTimer = setTimeout(() => ui.liveCaption.classList.add("hidden"), 7000);
   appendChatMessage(caption);
 
+  if (!state.voiceEnabled || !String(caption.text || "").trim()) return;
+
+  // AI replies must always be spoken for the listener, even in the same language.
+  if (caption.isAi) {
+    queueSpeech(caption.text, caption.targetLanguage || state.language, { preferAi: true });
+    return;
+  }
+
+  if (caption.speakerId === state.socket?.id) return;
+
   const foreignSpeech = caption.sourceLanguage && caption.sourceLanguage !== state.language;
-  const shouldSpeak = state.voiceEnabled
-    && caption.speakerId !== state.socket.id
-    && (caption.isAi || caption.translated || foreignSpeech);
-  if (shouldSpeak) {
+  if (caption.translated || foreignSpeech) {
     queueSpeech(caption.text, caption.targetLanguage || state.language);
   }
 }
@@ -892,9 +910,9 @@ ui.ttsModel?.addEventListener("change", () => {
   showToast(`Voz: ${state.ttsModel}`);
 });
 
-function queueSpeech(text, language) {
-  if (!text?.trim()) return;
-  state.ttsQueue = [{ text, language }];
+function queueSpeech(text, language, options = {}) {
+  if (!text?.trim() || !state.voiceEnabled) return;
+  state.ttsQueue = [{ text, language, preferAi: Boolean(options.preferAi) }];
   if (state.ttsPlaying && state.ttsAudio) {
     try {
       state.ttsAudio.pause();
@@ -903,8 +921,38 @@ function queueSpeech(text, language) {
     state.ttsAudio = null;
     state.ttsPlaying = false;
   }
+  try { window.speechSynthesis?.cancel(); } catch { /* ignore */ }
   applyRemoteVolumes();
-  playSpeechQueue();
+  void playSpeechQueue();
+}
+
+function pickBrowserVoice(lang) {
+  const voices = window.speechSynthesis?.getVoices?.() || [];
+  const wanted = String(lang || "pt-BR").replace("_", "-").toLowerCase();
+  const prefix = wanted.slice(0, 2);
+  return (
+    voices.find((voice) => voice.lang.replace("_", "-").toLowerCase() === wanted) ||
+    voices.find((voice) => voice.lang.replace("_", "-").toLowerCase().startsWith(prefix)) ||
+    null
+  );
+}
+
+function speakBrowser(text, language) {
+  return new Promise((resolve) => {
+    if (!window.speechSynthesis) {
+      resolve(false);
+      return;
+    }
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = language || state.language || "pt-BR";
+    utter.rate = 1.05;
+    utter.volume = Math.max(0, Math.min(1, state.translatedVolume));
+    const voice = pickBrowserVoice(utter.lang);
+    if (voice) utter.voice = voice;
+    utter.onend = () => resolve(true);
+    utter.onerror = () => resolve(false);
+    window.speechSynthesis.speak(utter);
+  });
 }
 
 async function playSpeechQueue() {
@@ -912,12 +960,13 @@ async function playSpeechQueue() {
   state.ttsPlaying = true;
   applyRemoteVolumes();
   const item = state.ttsQueue.shift();
+  let played = false;
   try {
     await ensureAudioCtx();
     const response = await fetch(`${state.apiOrigin}/api/openai/speech`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-openai-key": state.apiKey },
-      body: JSON.stringify({ ...item, model: selectedModels().ttsModel }),
+      body: JSON.stringify({ text: item.text, language: item.language, model: selectedModels().ttsModel }),
     });
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
@@ -932,24 +981,42 @@ async function playSpeechQueue() {
     state.ttsAudio = audio;
     audio.volume = Math.max(0, Math.min(1, state.translatedVolume));
     await new Promise((resolve) => {
-      audio.onended = resolve;
+      audio.onended = () => {
+        played = true;
+        resolve();
+      };
       audio.onerror = resolve;
       audio.play().then(() => {
-        ui.translationStatus.textContent = "Tradução falando · voz original abaixada";
+        ui.translationStatus.textContent = item.preferAi
+          ? "Poly AI falando · voz original abaixada"
+          : "Tradução falando · voz original abaixada";
       }).catch((error) => {
-        ui.translationStatus.textContent = error?.message || "O navegador bloqueou o áudio traduzido.";
+        ui.translationStatus.textContent = error?.message || "O navegador bloqueou o áudio.";
         resolve();
       });
     });
     URL.revokeObjectURL(url);
   } catch (error) {
-    ui.translationStatus.textContent = error.message;
-  } finally {
-    state.ttsPlaying = false;
-    state.ttsAudio = null;
-    applyRemoteVolumes();
-    playSpeechQueue();
+    ui.translationStatus.textContent = `${error.message} · tentando voz do navegador`;
   }
+
+  if (!played && state.voiceEnabled) {
+    applyRemoteVolumes();
+    const ok = await speakBrowser(item.text, item.language);
+    if (ok) {
+      played = true;
+      ui.translationStatus.textContent = item.preferAi
+        ? "Poly AI falando (voz do navegador)"
+        : "Tradução falando (voz do navegador)";
+    } else if (!ui.translationStatus.textContent.includes("Falha")) {
+      ui.translationStatus.textContent = "Não foi possível reproduzir a voz. Verifique a chave/crédito OpenAI.";
+    }
+  }
+
+  state.ttsPlaying = false;
+  state.ttsAudio = null;
+  applyRemoteVolumes();
+  void playSpeechQueue();
 }
 
 function duckLevelForPeer(peerId) {
@@ -1004,8 +1071,10 @@ ui.meetingLanguage.addEventListener("change", () => {
   showToast(`Idioma alterado para ${LANGUAGE_LABELS[state.language].name}`);
 });
 
-ui.voiceEnabled.addEventListener("change", () => {
-  state.voiceEnabled = ui.voiceEnabled.checked;
+function setVoiceEnabled(enabled) {
+  state.voiceEnabled = Boolean(enabled);
+  if (ui.voiceEnabled) ui.voiceEnabled.checked = state.voiceEnabled;
+  if (ui.chatVoiceEnabled) ui.chatVoiceEnabled.checked = state.voiceEnabled;
   if (!state.voiceEnabled) {
     state.ttsQueue = [];
     if (state.ttsAudio) {
@@ -1015,7 +1084,10 @@ ui.voiceEnabled.addEventListener("change", () => {
     window.speechSynthesis?.cancel();
   }
   applyRemoteVolumes();
-});
+}
+
+ui.voiceEnabled?.addEventListener("change", () => setVoiceEnabled(ui.voiceEnabled.checked));
+ui.chatVoiceEnabled?.addEventListener("change", () => setVoiceEnabled(ui.chatVoiceEnabled.checked));
 
 ui.originalVolume?.addEventListener("input", () => {
   state.originalVolume = Number(ui.originalVolume.value) / 100;

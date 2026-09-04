@@ -295,6 +295,22 @@ svg { width: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-l
   text-transform: none;
   letter-spacing: 0;
 }
+.chat-voice-toggle {
+  flex-direction: row !important;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px !important;
+  text-transform: none !important;
+  letter-spacing: 0 !important;
+  color: #dce4ed !important;
+  font-size: 11px !important;
+  grid-column: 1 / -1;
+}
+.chat-voice-toggle input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--teal);
+}
 .chat-log {
   flex: 1;
   min-height: 0;
