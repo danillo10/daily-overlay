@@ -141,6 +141,20 @@ async function openAIError(response) {
   }
 }
 
+function fetchOpenAI(url, options, timeoutMs = 30000) {
+  return fetch(url, {
+    ...options,
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+}
+
+function openAIConnectionFailure(response, error, fallback) {
+  const timedOut = error?.name === "TimeoutError" || error?.name === "AbortError";
+  return response.status(timedOut ? 504 : 502).json({
+    error: timedOut ? "A OpenAI demorou demais para responder. Tente novamente." : fallback,
+  });
+}
+
 app.use(cors(corsOptions));
 app.use(express.json({ limit: "16kb" }));
 
@@ -155,7 +169,7 @@ app.post("/api/openai/translate", async (request, response) => {
   if (sourceLanguage === targetLanguage) return response.json({ text, model });
 
   try {
-    const upstream = await fetch("https://api.openai.com/v1/chat/completions", {
+    const upstream = await fetchOpenAI("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -169,13 +183,13 @@ app.post("/api/openai/translate", async (request, response) => {
           { role: "user", content: text },
         ],
       }),
-    });
+    }, 20000);
     if (!upstream.ok) return response.status(upstream.status).json({ error: await openAIError(upstream) });
     const payload = await upstream.json();
     const translated = cleanText(payload.choices?.[0]?.message?.content, 900);
     return response.json({ text: translated || text, model });
-  } catch {
-    return response.status(502).json({ error: "Não foi possível acessar a OpenAI." });
+  } catch (error) {
+    return openAIConnectionFailure(response, error, "Não foi possível acessar a OpenAI.");
   }
 });
 
@@ -193,19 +207,21 @@ app.post("/api/openai/transcribe", upload.single("audio"), async (request, respo
   form.append("model", model);
   const language = cleanText(request.body?.language, 10).slice(0, 2);
   if (language) form.append("language", language);
-  form.append("file", new Blob([request.file.buffer], { type: request.file.mimetype || "audio/webm" }), "speech.webm");
+  const mime = request.file.mimetype || "audio/webm";
+  const extension = mime.includes("mp4") ? "m4a" : "webm";
+  form.append("file", new Blob([request.file.buffer], { type: mime }), `speech.${extension}`);
 
   try {
-    const upstream = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    const upstream = await fetchOpenAI("https://api.openai.com/v1/audio/transcriptions", {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}` },
       body: form,
-    });
+    }, 30000);
     if (!upstream.ok) return response.status(upstream.status).json({ error: await openAIError(upstream) });
     const payload = await upstream.json();
     return response.json({ text: cleanText(payload.text, 900), model });
-  } catch {
-    return response.status(502).json({ error: "Não foi possível transcrever o áudio." });
+  } catch (error) {
+    return openAIConnectionFailure(response, error, "Não foi possível transcrever o áudio.");
   }
 });
 
@@ -226,18 +242,18 @@ app.post("/api/openai/speech", async (request, response) => {
   if (model === "tts-1" || model === "tts-1-hd") speechBody.speed = 0.92;
 
   try {
-    const upstream = await fetch("https://api.openai.com/v1/audio/speech", {
+    const upstream = await fetchOpenAI("https://api.openai.com/v1/audio/speech", {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify(speechBody),
-    });
+    }, 30000);
     if (!upstream.ok) return response.status(upstream.status).json({ error: await openAIError(upstream) });
     response.set("Content-Type", "audio/mpeg");
     response.set("Cache-Control", "no-store");
     response.set("X-PolyCall-Model", model);
     return response.send(Buffer.from(await upstream.arrayBuffer()));
-  } catch {
-    return response.status(502).json({ error: "Não foi possível gerar a voz traduzida." });
+  } catch (error) {
+    return openAIConnectionFailure(response, error, "Não foi possível gerar a voz traduzida.");
   }
 });
 
@@ -257,7 +273,7 @@ app.post("/api/openai/assistant", async (request, response) => {
   if (!message) return response.status(400).json({ error: "Mensagem para a IA não recebida." });
 
   try {
-    const upstream = await fetch("https://api.openai.com/v1/chat/completions", {
+    const upstream = await fetchOpenAI("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -282,14 +298,14 @@ app.post("/api/openai/assistant", async (request, response) => {
           { role: "user", content: message },
         ],
       }),
-    });
+    }, 25000);
     if (!upstream.ok) return response.status(upstream.status).json({ error: await openAIError(upstream) });
     const payload = await upstream.json();
     const text = cleanText(payload.choices?.[0]?.message?.content, 1000);
     if (text === "[NO_RESPONSE]") return response.json({ text: "", model });
     return response.json({ text, model });
-  } catch {
-    return response.status(502).json({ error: "Não foi possível conversar com a IA." });
+  } catch (error) {
+    return openAIConnectionFailure(response, error, "Não foi possível conversar com a IA.");
   }
 });
 
@@ -386,12 +402,16 @@ io.on("connection", (socket) => {
     });
   });
 
-  socket.on("transcript", ({ text, language }) => {
+  socket.on("transcript", ({ text, language, turnComplete }) => {
     const speaker = socket.data.member;
     const original = cleanText(text);
     if (!speaker || !original) return;
-    if (Date.now() - Number(socket.data.lastTranscriptAt || 0) < 350) return;
+    const repeatedImmediately =
+      original === socket.data.lastTranscript &&
+      Date.now() - Number(socket.data.lastTranscriptAt || 0) < 1200;
+    if (repeatedImmediately) return;
     socket.data.lastTranscriptAt = Date.now();
+    socket.data.lastTranscript = original;
 
     io.to(speaker.roomId).emit("source-caption", {
       id: `${socket.id}-${Date.now()}`,
@@ -399,6 +419,7 @@ io.on("connection", (socket) => {
       speakerName: speaker.name,
       text: original,
       sourceLanguage: LANGUAGES[language] ? language : speaker.language,
+      turnComplete: turnComplete !== false,
       createdAt: Date.now(),
     });
   });

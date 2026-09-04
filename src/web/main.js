@@ -25,6 +25,7 @@ const state = {
   socket: null,
   stream: null,
   peers: new Map(),
+  pendingIce: new Map(),
   participants: [],
   roomId: "",
   name: "",
@@ -46,9 +47,11 @@ const state = {
   transcriptionBusy: 0,
   transcriptionQueue: [],
   lastTranscript: "",
+  lastTranscriptAt: 0,
   lastAiSpoken: "",
   audioCtx: null,
   analyser: null,
+  analyserSource: null,
   vadRaf: 0,
   utteranceRecorder: null,
   utteranceChunks: [],
@@ -72,6 +75,7 @@ const state = {
   aiBuffer: [],
   aiTimer: null,
   aiBusy: false,
+  aiGeneration: 0,
   chatOpen: false,
   chatMessages: [],
 };
@@ -140,6 +144,21 @@ setJoinMode(joinMode);
 
 function normalizeRoomId(value) {
   return String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8);
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 30000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error("A operação demorou demais. Tentando novamente na próxima fala.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function generateRoomId() {
@@ -290,13 +309,21 @@ function registerSocketEvents() {
     try {
       if (signal.type === "offer") {
         await pc.setRemoteDescription(signal);
+        await flushIceCandidates(from, pc);
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         state.socket.emit("signal", { target: from, signal: pc.localDescription });
       } else if (signal.type === "answer") {
         await pc.setRemoteDescription(signal);
+        await flushIceCandidates(from, pc);
       } else if (signal.candidate) {
-        await pc.addIceCandidate(signal);
+        if (pc.remoteDescription) {
+          await pc.addIceCandidate(signal);
+        } else {
+          const queued = state.pendingIce.get(from) || [];
+          queued.push(signal);
+          state.pendingIce.set(from, queued);
+        }
       }
     } catch (error) {
       console.error("WebRTC signaling error", error);
@@ -317,10 +344,12 @@ function registerSocketEvents() {
   });
   state.socket.on("ai-state", (ai) => {
     const wasActive = Boolean(state.ai);
+    if (!ai || !state.ai || ai.ownerId !== state.ai.ownerId) state.aiGeneration += 1;
     state.ai = ai;
     if (!ai) {
       state.aiHistory = [];
       state.aiBuffer = [];
+      state.aiBusy = false;
       clearTimeout(state.aiTimer);
     } else if (ai.ownerId === state.socket?.id) {
       state.aiWanted = true;
@@ -376,6 +405,14 @@ function rejoinRoom() {
       });
     }
   });
+}
+
+async function flushIceCandidates(peerId, pc) {
+  const queued = state.pendingIce.get(peerId) || [];
+  state.pendingIce.delete(peerId);
+  for (const candidate of queued) {
+    await pc.addIceCandidate(candidate);
+  }
 }
 
 function createPeer(peerId, shouldOffer) {
@@ -491,6 +528,7 @@ function updateRemoteTile(peerId) {
 function removePeer(peerId) {
   state.peers.get(peerId)?.close();
   state.peers.delete(peerId);
+  state.pendingIce.delete(peerId);
   const routed = state.remoteGains.get(peerId);
   if (routed) {
     disconnectRemoteAudio(routed);
@@ -641,20 +679,24 @@ ui.toggleAi.addEventListener("click", async () => {
 function scheduleAiResponse(source) {
   if (!state.ai || state.ai.ownerId !== state.socket?.id) return;
   state.aiBuffer.push(`${source.speakerName}: ${source.text}`);
-  state.aiBuffer = state.aiBuffer.slice(-4);
+  state.aiBuffer = state.aiBuffer.slice(-8);
   clearTimeout(state.aiTimer);
-  state.aiTimer = setTimeout(requestAiResponse, 150);
+  if (source.turnComplete !== false) {
+    state.aiTimer = setTimeout(requestAiResponse, 850);
+  }
 }
 
 async function requestAiResponse() {
   if (state.aiBusy || !state.ai || state.ai.ownerId !== state.socket?.id || !state.aiBuffer.length) return;
+  const generation = state.aiGeneration;
+  const botId = state.ai.id;
   const message = state.aiBuffer.join("\n");
   state.aiBuffer = [];
   state.aiBusy = true;
   document.querySelector(".ai-tile")?.classList.add("thinking");
   ui.aiHint.textContent = "Poly AI está pensando...";
   try {
-    const response = await fetch(`${state.apiOrigin}/api/openai/assistant`, {
+    const response = await fetchWithTimeout(`${state.apiOrigin}/api/openai/assistant`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -664,9 +706,10 @@ async function requestAiResponse() {
         history: state.aiHistory,
         model: MODELS.chat,
       }),
-    });
+    }, 25000);
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "A IA não conseguiu responder.");
+    if (generation !== state.aiGeneration || state.ai?.id !== botId) return;
     if (payload.text) {
       state.aiHistory.push({ role: "user", content: message }, { role: "assistant", content: payload.text });
       state.aiHistory = state.aiHistory.slice(-10);
@@ -675,7 +718,7 @@ async function requestAiResponse() {
       let translated = false;
       if (state.ai.language !== state.language) {
         try {
-          const translatedResponse = await fetch(`${state.apiOrigin}/api/openai/translate`, {
+          const translatedResponse = await fetchWithTimeout(`${state.apiOrigin}/api/openai/translate`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -684,7 +727,7 @@ async function requestAiResponse() {
               targetLanguage: state.language,
               model: MODELS.chat,
             }),
-          });
+          }, 20000);
           const translatedPayload = await translatedResponse.json();
           if (!translatedResponse.ok) throw new Error(translatedPayload.error || "Falha na tradução da IA.");
           if (translatedPayload.text) {
@@ -713,9 +756,11 @@ async function requestAiResponse() {
       state.socket.emit("ai-response", { text: payload.text });
     }
   } catch (error) {
+    if (generation !== state.aiGeneration) return;
     ui.translationStatus.textContent = error.message;
     showToast(error.message);
   } finally {
+    if (generation !== state.aiGeneration) return;
     state.aiBusy = false;
     document.querySelector(".ai-tile")?.classList.remove("thinking");
     if (state.ai?.ownerId === state.socket?.id) {
@@ -741,6 +786,10 @@ function startRecognition() {
   state.transcriptionQueue = [];
   clearTimeout(state.transcriptionTimer);
   cancelAnimationFrame(state.vadRaf);
+  try { state.analyserSource?.disconnect(); } catch { /* ignore */ }
+  try { state.analyser?.disconnect(); } catch { /* ignore */ }
+  state.analyserSource = null;
+  state.analyser = null;
   stopUtteranceRecorder(false);
 
   const audioTrack = state.stream.getAudioTracks()[0];
@@ -761,6 +810,7 @@ function startRecognition() {
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 2048;
       source.connect(analyser);
+      state.analyserSource = source;
       state.analyser = analyser;
       const data = new Uint8Array(analyser.fftSize);
 
@@ -793,7 +843,7 @@ function startRecognition() {
             state.speechStarted = false;
             state.silenceStartedAt = 0;
             state.utteranceStartedAt = 0;
-            stopUtteranceRecorder(true);
+            stopUtteranceRecorder(true, false);
           }
         } else {
           state.vadNoiseFloor = Math.max(
@@ -809,7 +859,7 @@ function startRecognition() {
             state.speechStarted = false;
             state.silenceStartedAt = 0;
             state.utteranceStartedAt = 0;
-            stopUtteranceRecorder(true);
+            stopUtteranceRecorder(true, true);
           }
         }
         state.vadRaf = requestAnimationFrame(tick);
@@ -840,7 +890,10 @@ function startUtteranceRecorder(audioTrack, generation) {
     state.utteranceRecorder = null;
     if (!recorder._shouldFlush || generation !== state.transcriptionGeneration) return;
     if (!chunks.length) return;
-    void transcribeChunk(new Blob(chunks, { type: recorder.mimeType || "audio/webm" }));
+    void transcribeChunk(
+      new Blob(chunks, { type: recorder.mimeType || "audio/webm" }),
+      recorder._turnComplete,
+    );
   };
   try {
     recorder.start(250);
@@ -850,13 +903,14 @@ function startUtteranceRecorder(audioTrack, generation) {
   }
 }
 
-function stopUtteranceRecorder(shouldFlush) {
+function stopUtteranceRecorder(shouldFlush, turnComplete = false) {
   const recorder = state.utteranceRecorder;
   if (!recorder) {
     state.utteranceActive = false;
     return;
   }
   recorder._shouldFlush = Boolean(shouldFlush);
+  recorder._turnComplete = Boolean(turnComplete);
   if (recorder.state === "recording") {
     try { recorder.requestData(); } catch { /* ignore */ }
     try { recorder.stop(); } catch { /* ignore */ }
@@ -874,34 +928,40 @@ function similarTranscript(a, b) {
   return Math.abs(x.length - y.length) < 10 && (x.includes(y) || y.includes(x));
 }
 
-function transcribeChunk(blob) {
+function transcribeChunk(blob, turnComplete = true) {
   if (blob.size < 300) return;
-  state.transcriptionQueue.push(blob);
+  state.transcriptionQueue.push({ blob, turnComplete });
   if (state.transcriptionQueue.length > 10) state.transcriptionQueue.shift();
   void pumpTranscriptionQueue();
 }
 
 async function pumpTranscriptionQueue() {
   if (state.transcriptionBusy) return;
-  const blob = state.transcriptionQueue.shift();
-  if (!blob) return;
+  const item = state.transcriptionQueue.shift();
+  if (!item) return;
+  const { blob, turnComplete } = item;
   state.transcriptionBusy = 1;
   ui.translationStatus.textContent = "Fechando frase e enviando para interpretação...";
   const form = new FormData();
-  form.append("audio", blob, "speech.webm");
+  const extension = blob.type.includes("mp4") ? "m4a" : "webm";
+  form.append("audio", blob, `speech.${extension}`);
   form.append("language", state.language);
   form.append("model", MODELS.stt);
   try {
-    const response = await fetch(`${state.apiOrigin}/api/openai/transcribe`, {
+    const response = await fetchWithTimeout(`${state.apiOrigin}/api/openai/transcribe`, {
       method: "POST",
       headers: { "x-stt-model": MODELS.stt },
       body: form,
-    });
+    }, 30000);
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Falha na transcrição.");
     const text = String(payload.text || "").trim();
-    if (text && !similarTranscript(text, state.lastTranscript)) {
+    const recentlyRepeated =
+      similarTranscript(text, state.lastTranscript) &&
+      Date.now() - state.lastTranscriptAt < 2000;
+    if (text && !recentlyRepeated) {
       state.lastTranscript = text;
+      state.lastTranscriptAt = Date.now();
       // Show the user's own line immediately in chat.
       handleCaption({
         id: `local-${Date.now()}`,
@@ -914,13 +974,14 @@ async function pumpTranscriptionQueue() {
         isAi: false,
         createdAt: Date.now(),
       });
-      state.socket.emit("transcript", { text, language: state.language });
+      state.socket.emit("transcript", { text, language: state.language, turnComplete });
       // Don't wait for the socket echo to ask the AI.
       scheduleAiResponse({
         speakerName: state.name,
         text,
         speakerId: state.socket.id,
         isAi: false,
+        turnComplete,
       });
       const waitingForAi = state.ai ? " · IA analisando" : "";
       ui.translationStatus.textContent = payload.model
@@ -971,7 +1032,7 @@ async function processSourceCaption(source) {
   let translated = false;
   if (source.sourceLanguage !== state.language) {
     try {
-      const response = await fetch(`${state.apiOrigin}/api/openai/translate`, {
+      const response = await fetchWithTimeout(`${state.apiOrigin}/api/openai/translate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -980,13 +1041,23 @@ async function processSourceCaption(source) {
           targetLanguage: state.language,
           model: MODELS.chat,
         }),
-      });
+      }, 20000);
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Falha na tradução.");
       text = payload.text;
       translated = true;
     } catch (error) {
       ui.translationStatus.textContent = error.message;
+      handleCaption({
+        ...source,
+        original: source.text,
+        text: source.text,
+        targetLanguage: state.language,
+        translated: false,
+        translationFailed: true,
+        isAi: Boolean(source.isAi),
+      });
+      return;
     }
   }
   handleCaption({
@@ -1023,6 +1094,7 @@ function handleCaption(caption) {
 
   if (!state.voiceEnabled) return;
   if (caption.speakerId === state.socket?.id) return;
+  if (caption.translationFailed) return;
 
   const foreignSpeech = caption.sourceLanguage && caption.sourceLanguage !== state.language;
   if (caption.translated || foreignSpeech) {
@@ -1233,11 +1305,11 @@ async function playSpeechQueue() {
   // OpenAI TTS first (more reliable than browser voices on many devices).
   try {
     ui.translationStatus.textContent = item.preferAi ? "Poly AI gerando voz..." : "Gerando voz traduzida...";
-    const response = await fetch(`${state.apiOrigin}/api/openai/speech`, {
+    const response = await fetchWithTimeout(`${state.apiOrigin}/api/openai/speech`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text: item.text, language: item.language, model: MODELS.tts }),
-    });
+    }, 30000);
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
       throw new Error(payload.error || "Falha ao gerar voz.");
@@ -1407,6 +1479,10 @@ function stopTranscription() {
   state.transcriptionQueue = [];
   clearTimeout(state.transcriptionTimer);
   cancelAnimationFrame(state.vadRaf);
+  try { state.analyserSource?.disconnect(); } catch { /* ignore */ }
+  try { state.analyser?.disconnect(); } catch { /* ignore */ }
+  state.analyserSource = null;
+  state.analyser = null;
   state.speechStarted = false;
   state.silenceStartedAt = 0;
   stopUtteranceRecorder(false);
